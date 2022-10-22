@@ -16,15 +16,17 @@ class weather_router:
                 point_validity,
                 ):
         """
-        algorithm: class
+        weather_router: class
             :param polar: class
-                a class to return speed and dir given tws and twd (in polar.py)
+                a class to return boat speed given tws and twa
             :param  get_wind: function
-                user supplied function to return tuple of (twd, tws) given (t,lat,lon)
+                supplied function to return tuple of (twd, tws) given (t,lat,lon)
             :param time_step: list[numpy.datetime64]
                 list of time steps, time at which to start assumed to be at time_step[0]
-            :param start_position: (float64, float64)
+            :param start_point: (float64, float64)
                 (lat,lon) start position
+            :param end_point: (float64, float64)
+                (lat,lon) end position                
             :param point_validity function
                 supplied function to return boolean (land or no)
         """
