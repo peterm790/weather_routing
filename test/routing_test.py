@@ -1,6 +1,8 @@
 import xarray as xr
 import zarr
 import numpy as np
+import sys
+sys.path.insert(0, '../')
 from isochronal_weather_router import weather_router
 from polar import Polar
 import pandas as pd
@@ -16,7 +18,8 @@ def getWindAt(t, lat, lon):
     return (np.float32(twd_sel.values), np.float32(tws_sel.values))
 
 
-land = xr.open_dataset('weather_data/era5_land-sea-mask.nc')
-land.coords['longitude'] = (land.coords['longitude'] + 180) % 360 - 180
-land = land.sortby(land.longitude)
-lsm = land.lsm[0]
+weatherrouter = weather_router(Polar('volvo70.pol'), getWindAt, ds.time.values, step = 12, (-34,17),(-24,-45))
+
+weatherrouter.route()
+
+print(weatherrouter.get_fastest_route())

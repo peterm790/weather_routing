@@ -10,10 +10,11 @@ class weather_router:
     def __init__ (self, 
                 polar,  
                 get_wind, 
-                time_steps, 
+                time_steps,
+                step
                 start_point,
                 end_point, 
-                point_validity,
+                point_validity = None,
                 ):
         """
         weather_router: class
@@ -23,6 +24,8 @@ class weather_router:
                 supplied function to return tuple of (twd, tws) given (t,lat,lon)
             :param time_steps: list[numpy.datetime64]
                 list of time steps, time at which to start assumed to be at time_step[0]
+            :param step: int,float64
+                number of hours between time_steps
             :param start_point: (float64, float64)
                 (lat,lon) start position
             :param end_point: (float64, float64)
@@ -36,18 +39,21 @@ class weather_router:
         self.track = []
         self.get_wind = get_wind
         self.time_steps = time_steps
+        self.step = step
         self.start_point = start_point
         self.end_point = end_point
-        if point_validity = None:
+        if point_validity == None:
             from point_validity import land_sea_mask
-    
-        self.point_validity = point_validity
+            lsm = land_sea_mask()
+            self.point_validity = lsm.point_validity
+        else:
+            self.point_validity = point_validity
 
 
-    def getDist_wp(lat, lon):
+    def getDist_wp(self, lat, lon):
         return geopy.distance.great_circle((lat,lon), self.end_point).nm
 
-    def getBearing_from_start(lat2,lon2):
+    def getBearing_from_start(self, lat2,lon2):
         lat1, lon1 = self.start_point
         dLon = lon2 - lon1;
         y = math.sin(dLon) * math.cos(lat2);
@@ -56,7 +62,7 @@ class weather_router:
         if brng < 0: brng+= 360
         return brng
 
-    def getBearing_to_end(lat2,lon2):
+    def getBearing_to_end(self, lat2,lon2):
         lat1, lon1 = self.end_point
         dLon = lon2 - lon1;
         y = math.sin(dLon) * math.cos(lat2);
@@ -65,15 +71,18 @@ class weather_router:
         if brng < 0: brng+= 360
         return brng
 
-    def getTWA_from_heading(bearing,TWD):
+    def getTWA_from_heading(self, bearing,TWD):
         TWA = bearing - TWD
         return (TWA + 180) % 360 - 180
 
-    def get_possible(inputs):
+    def myround(self, x, base=5):
+        return base * round(x/base)
+
+    def get_possible(self, inputs):
         t,arr = inputs
         lat_init, lon_init, route = arr
         possible = []
-        twd, tws = self.getWind(t, lat_init, lon_init)
+        twd, tws = self.get_wind(t, lat_init, lon_init)
         #get bearing to finish
         bearing_end = int(self.getBearing_to_end(lat_init,lon_init))
         route.append(('dummy'))
@@ -81,14 +90,14 @@ class weather_router:
         #for heading in range(bearing_end-175,bearing_end+175,10): #experiment with more than 180 deg spread
             twa = self.getTWA_from_heading(heading, twd)
             speed = self.polar.getSpeed(tws,math.radians(np.abs(twa)))
-            end_point = geopy.distance.geodesic(nautical=speed*12).destination((lat_init,lon_init), heading)
+            end_point = geopy.distance.geodesic(nautical=speed*self.step).destination((lat_init,lon_init), heading)
             lat = end_point.latitude
             lon = end_point.longitude
             route = route[:-1]
             route.append((lat,lon))
             if self.point_validity(lat, lon):
                 dist_wp = self.getDist_wp(lat, lon)
-                bearing_start = self.myround(int(getBearing_from_start(lat,lon)))            
+                bearing_start = self.myround(int(self.getBearing_from_start(lat,lon)))            
                 #if dist_wp <= dist_wp_init+1:
                 possible.append([end_point.latitude, end_point.longitude, route, dist_wp, bearing_start,bearing_end, speed, twa, twd, tws, heading,t])
         return possible
@@ -101,26 +110,26 @@ class weather_router:
             flag to adjust accuracy vs speed       
         """
         lat, lon = self.start_point
+        self.isochrones = []
         if not self.point_validity(lat,lon):
             print('start point error')
         else:
             step = 0
             #dist_wp_init = self.getDist_wp(lat, lon)
-            isochrones = []
             not_done = True
             while not_done:
                 for step,t in enumerate(self.time_steps):
                     print(step)
                     if step == 0:
                         possible = self.get_possible([t, [lat, lon, [self.start_point]]])
-                        isochrones.append(np.array(possible, dtype=object))
+                        self.isochrones.append(np.array(possible, dtype=object))
                     else:
                         arr = (np.array(possible, dtype=object))
                         #prune slow tracks
                         df = pd.DataFrame(arr)
                         df .columns = ['lat', 'lon','route', 'dist_wp','brg_start','brg_end','speed', 'twa', 'twd', 'tws', 'heading', 'time']
                         arr = df[df['dist_wp'] == df.groupby('brg_start')['dist_wp'].transform('min')].to_numpy()
-                        isochrones.append(arr)
+                        self.isochrones.append(arr)
                         #del possible
                         dist_wp = np.min(arr[:, 3]) 
                         if dist_wp > 30:
@@ -142,6 +151,13 @@ class weather_router:
                                 not_done = False
                                 break
                         possible = sum(possible_at_t,[]) 
-        return isochrones
 
+    def get_isochrones(self):
+        df = pd.DataFrame(np.concatenate(self.isochrones))
+        df .columns =  ['lat', 'lon','route', 'dist_wp','brg_start','brg_end','speed', 'twa', 'twd', 'tws', 'heading', 'time']
+        return df
+
+    def get_fastest_route(self):
+        df = self.get_isochrones()
+        return df.iloc[pd.to_numeric(df['dist_wp']).idxmin()].route
 
