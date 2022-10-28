@@ -21,7 +21,7 @@ class weather_router:
                 a class to return boat speed given tws and twa
             :param  get_wind: function
                 supplied function to return tuple of (twd, tws) given (t,lat,lon)
-            :param time_step: list[numpy.datetime64]
+            :param time_steps: list[numpy.datetime64]
                 list of time steps, time at which to start assumed to be at time_step[0]
             :param start_point: (float64, float64)
                 (lat,lon) start position
@@ -38,6 +38,9 @@ class weather_router:
         self.time_steps = time_steps
         self.start_point = start_point
         self.end_point = end_point
+        if point_validity = None:
+            from point_validity import land_sea_mask
+    
         self.point_validity = point_validity
 
 
@@ -83,7 +86,7 @@ class weather_router:
             lon = end_point.longitude
             route = route[:-1]
             route.append((lat,lon))
-            if self.point_vality(lat, lon):
+            if self.point_validity(lat, lon):
                 dist_wp = self.getDist_wp(lat, lon)
                 bearing_start = self.myround(int(getBearing_from_start(lat,lon)))            
                 #if dist_wp <= dist_wp_init+1:
@@ -98,7 +101,9 @@ class weather_router:
             flag to adjust accuracy vs speed       
         """
         lat, lon = self.start_point
-        if point_vality(lat,lon):
+        if not self.point_validity(lat,lon):
+            print('start point error')
+        else:
             step = 0
             #dist_wp_init = self.getDist_wp(lat, lon)
             isochrones = []
@@ -107,11 +112,8 @@ class weather_router:
                 for step,t in enumerate(self.time_steps):
                     print(step)
                     if step == 0:
-                        if self.point_vality(lat,lon):
-                            possible = self.get_possible([t, [lat, lon, [start_point]]])
-                            isochrones.append(np.array(possible, dtype=object))
-                        else:
-                            print('start point error')
+                        possible = self.get_possible([t, [lat, lon, [self.start_point]]])
+                        isochrones.append(np.array(possible, dtype=object))
                     else:
                         arr = (np.array(possible, dtype=object))
                         #prune slow tracks
