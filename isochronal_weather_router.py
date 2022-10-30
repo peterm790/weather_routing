@@ -11,7 +11,7 @@ class weather_router:
                 polar,  
                 get_wind, 
                 time_steps,
-                step
+                step,
                 start_point,
                 end_point, 
                 point_validity = None,
@@ -75,7 +75,7 @@ class weather_router:
         TWA = bearing - TWD
         return (TWA + 180) % 360 - 180
 
-    def myround(self, x, base=5):
+    def myround(self, x, base=10):
         return base * round(x/base)
 
     def get_possible(self, inputs):
@@ -83,13 +83,11 @@ class weather_router:
         lat_init, lon_init, route = arr
         possible = []
         twd, tws = self.get_wind(t, lat_init, lon_init)
-        #get bearing to finish
         bearing_end = int(self.getBearing_to_end(lat_init,lon_init))
-        route.append(('dummy'))
-        for heading in range(0,360,5):
-        #for heading in range(bearing_end-175,bearing_end+175,10): #experiment with more than 180 deg spread
+        route.append('dummy')
+        for heading in range(0,360,10):
             twa = self.getTWA_from_heading(heading, twd)
-            speed = self.polar.getSpeed(tws,math.radians(np.abs(twa)))
+            speed = self.polar.getSpeed(tws,np.abs(twa))
             end_point = geopy.distance.geodesic(nautical=speed*self.step).destination((lat_init,lon_init), heading)
             lat = end_point.latitude
             lon = end_point.longitude
@@ -106,7 +104,6 @@ class weather_router:
         """
         Todo: 
             add error logging
-            fix break 
             flag to adjust accuracy vs speed       
         """
         lat, lon = self.start_point
@@ -115,22 +112,20 @@ class weather_router:
             print('start point error')
         else:
             step = 0
-            #dist_wp_init = self.getDist_wp(lat, lon)
             not_done = True
             while not_done:
                 for step,t in enumerate(self.time_steps):
                     print(step)
                     if step == 0:
                         possible = self.get_possible([t, [lat, lon, [self.start_point]]])
-                        self.isochrones.append(np.array(possible, dtype=object))
                     else:
                         arr = (np.array(possible, dtype=object))
                         #prune slow tracks
                         df = pd.DataFrame(arr)
                         df .columns = ['lat', 'lon','route', 'dist_wp','brg_start','brg_end','speed', 'twa', 'twd', 'tws', 'heading', 'time']
-                        arr = df[df['dist_wp'] == df.groupby('brg_start')['dist_wp'].transform('min')].to_numpy()
-                        self.isochrones.append(arr)
-                        #del possible
+                        df = df[df['dist_wp'] == df.groupby('brg_start')['dist_wp'].transform('min')]
+                        #df = df.sort_values('lat')
+                        self.isochrones.append(df.to_numpy())
                         dist_wp = np.min(arr[:, 3]) 
                         if dist_wp > 30:
                             possible_at_t = []
@@ -143,9 +138,6 @@ class weather_router:
                                 possible_at_t = []
                                 for i in inputs:
                                     possible_at_t.append(self.get_possible(i))
-                                #b = db.from_sequence(inputs, npartitions = 8)
-                                #b = b.map(get_possible)
-                                #possible_at_t = b.compute()
                         else:
                                 print('reached dest')
                                 not_done = False
@@ -153,11 +145,10 @@ class weather_router:
                         possible = sum(possible_at_t,[]) 
 
     def get_isochrones(self):
-        df = pd.DataFrame(np.concatenate(self.isochrones))
-        df .columns =  ['lat', 'lon','route', 'dist_wp','brg_start','brg_end','speed', 'twa', 'twd', 'tws', 'heading', 'time']
-        return df
+        return self.isochrones
 
     def get_fastest_route(self):
-        df = self.get_isochrones()
+        df = pd.DataFrame(np.concatenate(self.isochrones))
+        df .columns =  ['lat', 'lon','route', 'dist_wp','brg_start','brg_end','speed', 'twa', 'twd', 'tws', 'heading', 'time']
         return df.iloc[pd.to_numeric(df['dist_wp']).idxmin()].route
 

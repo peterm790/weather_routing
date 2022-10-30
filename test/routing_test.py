@@ -18,7 +18,7 @@ def getWindAt(t, lat, lon):
     return (np.float32(twd_sel.values), np.float32(tws_sel.values))
 
 
-weatherrouter = weather_router(Polar('volvo70.pol'), getWindAt, ds.time.values, step = 12, (-34,17),(-24,-45))
+weatherrouter = weather_router(Polar('volvo70.pol'), getWindAt, ds.time.values, 12, (-34,17),(-24,-45))
 
 weatherrouter.route()
 
