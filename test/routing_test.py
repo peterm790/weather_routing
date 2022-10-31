@@ -5,7 +5,6 @@ import sys
 sys.path.insert(0, '../')
 from isochronal_weather_router import weather_router
 from polar import Polar
-import pandas as pd
 
 
 ds = xr.open_zarr('/home/peter/Documents/weather_routing/test/test_ds.zarr')
