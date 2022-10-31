@@ -13,7 +13,7 @@ class land_sea_mask():
         lsm.coords['longitude'] = (lsm.coords['longitude'] + 180) % 360 - 180
         lsm = lsm.sortby(lsm.longitude)
         self.lsm = lsm.lsm[0].load()
-        self.lsm_arr = lsm.values
+        self.lsm_arr = self.lsm.values
         self.lats = list(lsm.latitude.values)
         self.lons = list(lsm.longitude.values)
 
