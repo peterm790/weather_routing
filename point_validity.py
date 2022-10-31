@@ -17,7 +17,7 @@ class land_sea_mask():
         self.lats = list(lsm.latitude.values)
         self.lons = list(lsm.longitude.values)
 
-    def point_validity_arr(lat, lon):
+    def point_validity_arr(self, lat, lon):
         x = self.lats.index(round(lat*4)/4)
         y = self.lons.index(round(lon*4)/4)
         return self.lsm_arr[x,y] <= 0.1
