@@ -45,7 +45,7 @@ class weather_router:
         if point_validity == None:
             from point_validity import land_sea_mask
             lsm = land_sea_mask()
-            self.point_validity = lsm.point_validity
+            self.point_validity = lsm.point_validity_arr
         else:
             self.point_validity = point_validity
 
@@ -53,36 +53,45 @@ class weather_router:
     def getDist_wp(self, lat, lon):
         return geopy.distance.great_circle((lat,lon), self.end_point).nm
 
+
     def getBearing_from_start(self, lat2,lon2):
-        lat1, lon1 = self.start_point
-        dLon = lon2 - lon1;
-        y = math.sin(dLon) * math.cos(lat2);
-        x = math.cos(lat1)*math.sin(lat2) - math.sin(lat1)*math.cos(lat2)*math.cos(dLon);
-        brng = np.rad2deg(math.atan2(y, x));
-        if brng < 0: brng+= 360
-        return brng
+        pointA = self.start_point
+        pointB = (lat2,lon2)
+        lat1 = math.radians(pointA[0])
+        lat2 = math.radians(pointB[0])
+        diffLong = math.radians(pointB[1] - pointA[1])
+        x = math.sin(diffLong) * math.cos(lat2)
+        y = math.cos(lat1) * math.sin(lat2) - (math.sin(lat1) * math.cos(lat2) * math.cos(diffLong))
+        initial_bearing = math.atan2(x, y)
+        initial_bearing = math.degrees(initial_bearing)
+        compass_bearing = (initial_bearing + 360) % 360
+        return compass_bearing
 
     def getBearing_to_end(self, lat2,lon2):
-        lat1, lon1 = self.end_point
-        dLon = lon2 - lon1;
-        y = math.sin(dLon) * math.cos(lat2);
-        x = math.cos(lat1)*math.sin(lat2) - math.sin(lat1)*math.cos(lat2)*math.cos(dLon);
-        brng = np.rad2deg(math.atan2(y, x));
-        if brng < 0: brng+= 360
-        return brng
+        pointA = self.end_point
+        pointB = (lat2,lon2)
+        lat1 = math.radians(pointA[0])
+        lat2 = math.radians(pointB[0])
+        diffLong = math.radians(pointB[1] - pointA[1])
+        x = math.sin(diffLong) * math.cos(lat2)
+        y = math.cos(lat1) * math.sin(lat2) - (math.sin(lat1) * math.cos(lat2) * math.cos(diffLong))
+        initial_bearing = math.atan2(x, y)
+        initial_bearing = math.degrees(initial_bearing)
+        compass_bearing = (initial_bearing + 360) % 360
+        return compass_bearing
 
     def getTWA_from_heading(self, bearing,TWD):
         TWA = bearing - TWD
         return (TWA + 180) % 360 - 180
 
-    def myround(self, x, base=10):
+    def myround(self, x, base=5):
         return base * round(x/base)
 
     def get_possible(self,lat_init, lon_init, route, t):
         possible = []
         twd, tws = self.get_wind(t, lat_init, lon_init)
         route.append('dummy')
-        for heading in range(0,360,10):
+        for heading in range(0,360,5):
             twa = self.getTWA_from_heading(heading, twd)
             speed = self.polar.getSpeed(tws,np.abs(twa))
             end_point = geopy.distance.geodesic(nautical=speed*self.step).destination((lat_init,lon_init), heading)
@@ -91,12 +100,14 @@ class weather_router:
             route.append((lat,lon))
             if self.point_validity(lat, lon):
                 dist_wp = self.getDist_wp(lat, lon)
-                bearing_start = self.myround(int(self.getBearing_from_start(lat,lon)))            
-                possible.append([lat, lon, route, dist_wp, bearing_start])
+                if dist_wp <= self.dist_wp_init:
+                    bearing_start = self.myround(int(self.getBearing_from_start(lat,lon)))            
+                    possible.append([lat, lon, route, dist_wp, bearing_start])
         return possible
     
     def route(self):
         lat, lon = self.start_point
+        self.dist_wp_init = self.getDist_wp(lat, lon)
         self.isochrones = []
         if not self.point_validity(lat,lon):
             print('start point error')
