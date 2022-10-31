@@ -84,7 +84,7 @@ class weather_router:
         TWA = bearing - TWD
         return (TWA + 180) % 360 - 180
 
-    def myround(self, x, base=5):
+    def myround(self, x, base=1):
         return base * round(x/base)
 
     def get_possible(self,lat_init, lon_init, route, t):
