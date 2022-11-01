@@ -15,6 +15,7 @@ class weather_router:
                 start_point,
                 end_point, 
                 point_validity = None,
+                point_validity_extent = None
                 ):
         """
         weather_router: class
@@ -31,7 +32,9 @@ class weather_router:
             :param end_point: (float64, float64)
                 (lat,lon) end position                
             :param point_validity function
-                supplied function to return boolean (land or no)
+                supplied function to return boolean (land or no) or none to use inbuilt
+            :param point_validity_extent list
+                extent to trim point validity to, to speed up. [lat1,lon1,lat2,lon2]
         """
 
         self.end = False
@@ -44,7 +47,10 @@ class weather_router:
         self.end_point = end_point
         if point_validity == None:
             from point_validity import land_sea_mask
-            lsm = land_sea_mask()
+            if point_validity_extent:
+                lsm = land_sea_mask(point_validity_extent)
+            else:
+                lsm = land_sea_mask()
             self.point_validity = lsm.point_validity_arr
         else:
             self.point_validity = point_validity
@@ -79,8 +85,8 @@ class weather_router:
 
     def get_wake_lims(self, bearing_to_finish):
         backbearing = ((bearing_to_finish - 180) + 360) % 360
-        upper = ((backbearing+45) + 360) % 360
-        lower  = ((backbearing-45) + 360) % 360
+        upper = ((backbearing+35) + 360) % 360
+        lower  = ((backbearing-35) + 360) % 360
         return (upper,lower)
 
     def is_not_in_wake(self, wake_lims, bearing):
@@ -114,16 +120,16 @@ class weather_router:
     def get_possible(self,lat_init, lon_init, route, bearing_end, t):
         possible = []
         twd, tws = self.get_wind(t, lat_init, lon_init)
-        #route.append('dummy')
-        upper = int(bearing_end)+135
-        lower  = int(bearing_end) -135
+        upper = int(bearing_end)+145
+        lower  = int(bearing_end) -145
+        route.append('dummy')
         for heading in range(lower,upper,5):
             heading = ((int(heading) + 360) % 360)
             twa = self.getTWA_from_heading(heading, twd)
             speed = self.polar.getSpeed(tws,np.abs(twa))
             end_point = geopy.distance.great_circle(nautical=speed*self.step).destination((lat_init,lon_init), heading)
             lat,lon = end_point.latitude, end_point.longitude
-            #route = route[:-1]
+            route = route[:-1]
             route.append((lat,lon))
             if self.point_validity(lat, lon):
                 bearing_end = self.getBearing((lat,lon), self.end_point)           
