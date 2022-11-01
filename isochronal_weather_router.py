@@ -85,25 +85,26 @@ class weather_router:
 
     def get_wake_lims(self, bearing_to_finish):
         backbearing = ((bearing_to_finish - 180) + 360) % 360
-        upper = ((backbearing+45) + 360) % 360
-        lower  = ((backbearing-45) + 360) % 360
+        upper = ((backbearing+70) + 360) % 360
+        lower  = ((backbearing-70) + 360) % 360
         return (upper,lower)
 
     def is_not_in_wake(self, wake_lims, bearing):
-        in_wake = True
+        in_wake = False
         upper,lower = wake_lims
         if upper > lower:
             if bearing <= upper:
                 if bearing >= lower:
-                    in_wake = False
+                    in_wake = True
         else:
             if bearing >= lower:
-                in_wake = False
+                in_wake = True
             if bearing <= upper:
-                in_wake = False
+                in_wake = True
         return in_wake
     
     def prune_slow(self, possible):
+        print(len(possible))
         arr = np.array(possible, dtype=object)
         keep = [True] * len(arr)
         for i in range(len(possible)):
@@ -113,16 +114,16 @@ class weather_router:
                     if not i == j:
                         if keep[j] == True:
                             bearing = self.getBearing((arr[i][0], arr[i][1]), (arr[j][0], arr[j][1])) #inputting lat,lon of array i and j
-                            bool_ = self.is_not_in_wake(wake, bearing) #inputting bearing to finish of i into get_wake_lims and bearing to other point
-                            keep[j] = bool_       
+                            if self.is_not_in_wake(wake, bearing):
+                                keep[j] = False       
         return arr[keep]
     
 
     def get_possible(self,lat_init, lon_init, route, bearing_end, t):
         possible = []
         twd, tws = self.get_wind(t, lat_init, lon_init)
-        upper = int(bearing_end) +135
-        lower  = int(bearing_end) -135
+        upper = int(bearing_end) + 120
+        lower  = int(bearing_end) - 120
         route.append('dummy')
         for heading in range(lower,upper,10):
             heading = ((int(heading) + 360) % 360)
@@ -152,7 +153,6 @@ class weather_router:
                         bearing_end = self.getBearing((lat,lon), self.end_point)
                         possible = self.get_possible(lat, lon, [self.start_point], bearing_end, t)
                     else:
-                        print(len(possible))
                         self.isochrones.append(self.prune_slow(possible))
                         dist_wp = self.get_min_dist_wp(self.isochrones[-1])
                         if dist_wp > 30:
