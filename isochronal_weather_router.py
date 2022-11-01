@@ -85,8 +85,8 @@ class weather_router:
 
     def get_wake_lims(self, bearing_to_finish):
         backbearing = ((bearing_to_finish - 180) + 360) % 360
-        upper = ((backbearing+35) + 360) % 360
-        lower  = ((backbearing-35) + 360) % 360
+        upper = ((backbearing+45) + 360) % 360
+        lower  = ((backbearing-45) + 360) % 360
         return (upper,lower)
 
     def is_not_in_wake(self, wake_lims, bearing):
@@ -108,11 +108,12 @@ class weather_router:
         keep = [True] * len(arr)
         for i in range(len(possible)):
             if keep[i] == True:
+                wake = self.get_wake_lims(arr[i][-1])
                 for j in range(len(arr)):
                     if not i == j:
                         if keep[j] == True:
                             bearing = self.getBearing((arr[i][0], arr[i][1]), (arr[j][0], arr[j][1])) #inputting lat,lon of array i and j
-                            bool_ = self.is_not_in_wake(self.get_wake_lims(arr[i][-1]), bearing) #inputting bearing to finish of i into get_wake_lims and bearing to other point
+                            bool_ = self.is_not_in_wake(wake, bearing) #inputting bearing to finish of i into get_wake_lims and bearing to other point
                             keep[j] = bool_       
         return arr[keep]
     
@@ -120,10 +121,10 @@ class weather_router:
     def get_possible(self,lat_init, lon_init, route, bearing_end, t):
         possible = []
         twd, tws = self.get_wind(t, lat_init, lon_init)
-        upper = int(bearing_end)+145
-        lower  = int(bearing_end) -145
+        upper = int(bearing_end) +135
+        lower  = int(bearing_end) -135
         route.append('dummy')
-        for heading in range(lower,upper,5):
+        for heading in range(lower,upper,10):
             heading = ((int(heading) + 360) % 360)
             twa = self.getTWA_from_heading(heading, twd)
             speed = self.polar.getSpeed(tws,np.abs(twa))
@@ -151,6 +152,7 @@ class weather_router:
                         bearing_end = self.getBearing((lat,lon), self.end_point)
                         possible = self.get_possible(lat, lon, [self.start_point], bearing_end, t)
                     else:
+                        print(len(possible))
                         self.isochrones.append(self.prune_slow(possible))
                         dist_wp = self.get_min_dist_wp(self.isochrones[-1])
                         if dist_wp > 30:
