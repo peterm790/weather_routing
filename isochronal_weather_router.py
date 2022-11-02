@@ -85,8 +85,8 @@ class weather_router:
 
     def get_wake_lims(self, bearing_to_finish):
         backbearing = ((bearing_to_finish - 180) + 360) % 360
-        upper = ((backbearing+70) + 360) % 360
-        lower  = ((backbearing-70) + 360) % 360
+        upper = ((backbearing+45) + 360) % 360
+        lower  = ((backbearing-45) + 360) % 360
         return (upper,lower)
 
     def is_not_in_wake(self, wake_lims, bearing):
@@ -103,27 +103,38 @@ class weather_router:
                 in_wake = True
         return in_wake
     
-    def prune_slow(self, possible):
-        print(len(possible))
-        arr = np.array(possible, dtype=object)
+    def prune_slow(self, arr):
+        #arr = np.array(possible, dtype=object)
         keep = [True] * len(arr)
-        for i in range(len(possible)):
+        for i in range(len(arr)):
             if keep[i] == True:
-                wake = self.get_wake_lims(arr[i][-1])
+                wake = self.get_wake_lims(arr[i][3])
                 for j in range(len(arr)):
                     if not i == j:
                         if keep[j] == True:
                             bearing = self.getBearing((arr[i][0], arr[i][1]), (arr[j][0], arr[j][1])) #inputting lat,lon of array i and j
                             if self.is_not_in_wake(wake, bearing):
-                                keep[j] = False       
+                                keep[j] = False     
         return arr[keep]
+
+    def prune_close_together(self, possible):
+        arr = np.array(possible, dtype=object)
+        df = pd.DataFrame(arr)
+        df['dist_wp'] = self.get_dist_wp(arr)
+        df = df.sort_values('dist_wp')
+        df['round_lat'] = df.iloc[:,0].apply(pd.to_numeric).round(3)
+        df['round_lon'] = df.iloc[:,1].apply(pd.to_numeric).round(3)
+        df['tups'] = df[['round_lat','round_lon']].apply(tuple, axis=1)
+        df = df.drop_duplicates(subset=['tups'])
+        dit_wp_min = df['dist_wp'].min()
+        return df.iloc[:,:-3].to_numpy(), dit_wp_min
     
 
     def get_possible(self,lat_init, lon_init, route, bearing_end, t):
         possible = []
         twd, tws = self.get_wind(t, lat_init, lon_init)
-        upper = int(bearing_end) + 120
-        lower  = int(bearing_end) - 120
+        upper = int(bearing_end) + 110
+        lower  = int(bearing_end) - 110
         route.append('dummy')
         for heading in range(lower,upper,10):
             heading = ((int(heading) + 360) % 360)
@@ -153,8 +164,8 @@ class weather_router:
                         bearing_end = self.getBearing((lat,lon), self.end_point)
                         possible = self.get_possible(lat, lon, [self.start_point], bearing_end, t)
                     else:
+                        possible, dist_wp  = self.prune_close_together(possible)
                         self.isochrones.append(self.prune_slow(possible))
-                        dist_wp = self.get_min_dist_wp(self.isochrones[-1])
                         if dist_wp > 30:
                             if step == len(self.time_steps)-1:
                                 print('out of time')
@@ -162,7 +173,7 @@ class weather_router:
                                 break
                             else:
                                 possible_at_t = []
-                                for lat, lon, route, bearing_end in list(self.isochrones[-1]):
+                                for lat, lon, route, bearing_end in list(self.isochrones[-1][:,:4]):
                                     possible_at_t.append(self.get_possible(lat, lon, route, bearing_end, t))
                         else:
                                 print('reached dest')
@@ -175,7 +186,6 @@ class weather_router:
 
     def get_fastest_route(self):
         df = pd.DataFrame(self.isochrones[-1])
-        df.columns =  ['lat', 'lon','route', 'brg']
-        df['dist_wp'] = self.get_dist_wp(self.isochrones[-1])
+        df.columns =  ['lat', 'lon','route', 'brg','dist_wp']
         return df.iloc[pd.to_numeric(df['dist_wp']).idxmin()].route
 
