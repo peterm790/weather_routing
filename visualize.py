@@ -67,7 +67,7 @@ def visualize_3d(ds,start_point, end_point, isochrones, fastest):
     #plot current point
     fast_list = []
     for i in range(len(isochrones)):
-        lat,lon = fastest[i+1]
+        lat,lon = fastest[i]
         sample_points = dict(Longitude = lon, Latitude  = lat)
         fast_list.append(gv.Points(sample_points).opts(size = 10, color = 'green', projection=ccrs.PlateCarree()))
     dict_fast = {ds2.time.values[i]:fast_list[i] for i in range(len(isochrones))}
