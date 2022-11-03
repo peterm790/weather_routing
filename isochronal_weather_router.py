@@ -14,6 +14,8 @@ class weather_router:
                 step,
                 start_point,
                 end_point, 
+                spread = 120,
+                wake_lim = 45,
                 point_validity = None,
                 point_validity_extent = None
                 ):
@@ -45,6 +47,8 @@ class weather_router:
         self.step = step
         self.start_point = start_point
         self.end_point = end_point
+        self.spread = spread 
+        self.wake_lim = wake_lim
         if point_validity == None:
             from point_validity import land_sea_mask
             if point_validity_extent:
@@ -85,8 +89,8 @@ class weather_router:
 
     def get_wake_lims(self, bearing_to_finish):
         backbearing = ((bearing_to_finish - 180) + 360) % 360
-        upper = ((backbearing+45) + 360) % 360
-        lower  = ((backbearing-45) + 360) % 360
+        upper = ((backbearing+self.wake_lim) + 360) % 360
+        lower  = ((backbearing-self.wake_lim) + 360) % 360
         return (upper,lower)
 
     def is_not_in_wake(self, wake_lims, bearing):
@@ -104,7 +108,6 @@ class weather_router:
         return in_wake
     
     def prune_slow(self, arr):
-        #arr = np.array(possible, dtype=object)
         keep = [True] * len(arr)
         for i in range(len(arr)):
             if keep[i] == True:
@@ -120,6 +123,7 @@ class weather_router:
     def prune_close_together(self, possible):
         arr = np.array(possible, dtype=object)
         df = pd.DataFrame(arr)
+        print(len(df))
         df['dist_wp'] = self.get_dist_wp(arr)
         df = df.sort_values('dist_wp')
         df['round_lat'] = df.iloc[:,0].apply(pd.to_numeric).round(2)
@@ -133,8 +137,8 @@ class weather_router:
     def get_possible(self,lat_init, lon_init, route, bearing_end, t):
         possible = []
         twd, tws = self.get_wind(t, lat_init, lon_init)
-        upper = int(bearing_end) + 110
-        lower  = int(bearing_end) - 110
+        upper = int(bearing_end) + self.spread
+        lower  = int(bearing_end) - self.spread
         route.append('dummy')
         for heading in range(lower,upper,10):
             heading = ((int(heading) + 360) % 360)
@@ -184,8 +188,25 @@ class weather_router:
     def get_isochrones(self):
         return self.isochrones
 
-    def get_fastest_route(self):
+    def get_fastest_route(self, stats = False):
         df = pd.DataFrame(self.isochrones[-1])
         df.columns =  ['lat', 'lon','route', 'brg','dist_wp']
-        return df.iloc[pd.to_numeric(df['dist_wp']).idxmin()].route
+        fastest = df.iloc[pd.to_numeric(df['dist_wp']).idxmin()].route
+        if stats:
+            df = pd.DataFrame(fastest)
+            df.columns = ['lat','lon']
+            df['time'] = self.time_steps[:len(df)]
+            df[['twd', 'tws']] = pd.DataFrame(df.apply(lambda x: self.get_wind(x.time, x.lat, x.lon), axis = 1).tolist(),index=df.index)
+            df['pos'] = df[['lat','lon']].apply(tuple, axis = 1)
+            next_pos = list(df['pos'][1:])
+            next_pos.append(self.end_point)
+            df['next_pos'] = next_pos
+            df['heading'] = df.apply(lambda x: self.getBearing(x.pos, x.next_pos), axis = 1)
+            df['twa'] = df.apply(lambda x: self.getTWA_from_heading(x.heading, x.twd), axis = 1)
+            df['boat_speed'] = df.apply(lambda x: self.polar.getSpeed(x.tws, np.abs(x.twa)), axis = 1)
+            df['hours_elapsed'] = list(df.index)
+            df['hours_elapsed'] = df['hours_elapsed']*6
+            df['days_elapsed'] = df['hours_elapsed']/24
+            fastest = df
+        return fastest
 
