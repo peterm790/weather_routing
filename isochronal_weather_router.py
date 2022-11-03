@@ -1,4 +1,3 @@
-import xarray as xr
 import numpy as np
 import pandas as pd
 import math
@@ -7,14 +6,15 @@ import geopy.distance
 
 
 class weather_router:
-    def __init__ (self, 
+    def __init__(
+                self, 
                 polar,  
                 get_wind, 
                 time_steps,
                 step,
                 start_point,
                 end_point, 
-                spread = 120,
+                spread = 110,
                 wake_lim = 45,
                 point_validity = None,
                 point_validity_extent = None
