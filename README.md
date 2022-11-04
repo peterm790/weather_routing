@@ -109,4 +109,4 @@ visualize_3d(ds,Palma, Gibraltar, weatherrouter.get_isochrones(), weatherrouter.
 ![plot](bokeh_plot.png)
 
 
-
+An interactive example of the above plot is available [here](https://petemarsh.com/readme_example)
