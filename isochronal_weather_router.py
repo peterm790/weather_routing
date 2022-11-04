@@ -16,6 +16,7 @@ class weather_router:
                 end_point, 
                 spread = 110,
                 wake_lim = 45,
+                rounding = 3,
                 point_validity = None,
                 point_validity_extent = None
                 ):
@@ -49,6 +50,7 @@ class weather_router:
         self.end_point = end_point
         self.spread = spread 
         self.wake_lim = wake_lim
+        self.rounding = rounding
         if point_validity == None:
             from point_validity import land_sea_mask
             if point_validity_extent:
@@ -123,11 +125,10 @@ class weather_router:
     def prune_close_together(self, possible):
         arr = np.array(possible, dtype=object)
         df = pd.DataFrame(arr)
-        print(len(df))
         df['dist_wp'] = self.get_dist_wp(arr)
         df = df.sort_values('dist_wp')
-        df['round_lat'] = df.iloc[:,0].apply(pd.to_numeric).round(2)
-        df['round_lon'] = df.iloc[:,1].apply(pd.to_numeric).round(2)
+        df['round_lat'] = df.iloc[:,0].apply(pd.to_numeric).round(self.rounding)
+        df['round_lon'] = df.iloc[:,1].apply(pd.to_numeric).round(self.rounding)
         df['tups'] = df[['round_lat','round_lon']].apply(tuple, axis=1)
         df = df.drop_duplicates(subset=['tups'])
         dit_wp_min = df['dist_wp'].min()
@@ -188,7 +189,7 @@ class weather_router:
     def get_isochrones(self):
         return self.isochrones
 
-    def get_fastest_route(self, stats = False):
+    def get_fastest_route(self, stats = True):
         df = pd.DataFrame(self.isochrones[-1])
         df.columns =  ['lat', 'lon','route', 'brg','dist_wp']
         fastest = df.iloc[pd.to_numeric(df['dist_wp']).idxmin()].route

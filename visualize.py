@@ -27,7 +27,7 @@ def visualize_3d(ds,start_point, end_point, isochrones, fastest):
         :fastest list[tuples]
             list of (lat, lon) of fastest route
     """
-    ds_ = ds.coarsen({'lat':10, 'lon': 10}, boundary='pad').mean()
+    ds_ = ds.coarsen({'lat':4, 'lon': 4}, boundary='pad').mean()
     twd_ = np.deg2rad((270 - (ds_.twd)) % 360)
     ds2 = twd_.to_dataset(name = 'wind_angle')
     ds2['tws'] = ds_.tws
@@ -94,7 +94,7 @@ def visualize_3d(ds,start_point, end_point, isochrones, fastest):
     hv.output(widget_location='bottom')
     #make plot
     return images.opts(active_tools=['pan'], cmap='viridis',colorbar=True, 
-                width=900, height=700, clim=(0,30)) * coastline * land * hmap * points *iso_map * fast_map * fast_map_current
+                frame_width=900, frame_height=700, clim=(0,30)) * coastline * land * hmap * points *iso_map * fast_map * fast_map_current
 
 
 
