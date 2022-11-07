@@ -206,7 +206,7 @@ class weather_router:
             df['twa'] = df.apply(lambda x: self.getTWA_from_heading(x.heading, x.twd), axis = 1)
             df['boat_speed'] = df.apply(lambda x: self.polar.getSpeed(x.tws, np.abs(x.twa)), axis = 1)
             df['hours_elapsed'] = list(df.index)
-            df['hours_elapsed'] = df['hours_elapsed']*6
+            df['hours_elapsed'] = df['hours_elapsed']*self.step
             df['days_elapsed'] = df['hours_elapsed']/24
             fastest = df
         return fastest

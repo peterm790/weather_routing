@@ -2,8 +2,8 @@ import xarray as xr
 import zarr
 import numpy as np
 import sys
-sys.path.insert(0, '../.')
-sys.path.insert(0, '.')
+sys.path.insert(0, '../src/.')
+sys.path.insert(0, './src/.')
 from isochronal_weather_router import weather_router
 from polar import Polar
 
