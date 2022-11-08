@@ -1,9 +1,8 @@
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
 [project]
-name = "weather_routing"
+name = "weather_router"
 version = "0.0.1"
 authors = [
   { name="Peter Marsh", email="petermarsh790@gmail.com" },
@@ -16,7 +15,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-
 [project.urls]
 "Homepage" = "https://github.com/peterm790/weather_routing"
 "Bug Tracker" = "https://github.com/peterm790/weather_routing/issues"
