@@ -189,6 +189,10 @@ class weather_router:
     def get_isochrones(self):
         return self.isochrones
 
+
+    def get_possible(self):
+        return [iso[:,:2] for iso in self.isochrones]
+
     def get_fastest_route(self, stats = True):
         df = pd.DataFrame(self.isochrones[-1])
         df.columns =  ['lat', 'lon','route', 'brg','dist_wp']
