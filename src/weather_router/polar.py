@@ -5,7 +5,7 @@ import pandas as pd
 
 
 class Polar:
-	def __init__ (self, polarPath: str, f: FileIO = None):
+	def __init__ (self, polarPath = None, f = None):
 		"""
 		Parameters
 		----------
