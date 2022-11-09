@@ -190,7 +190,7 @@ class weather_router:
         return self.isochrones
 
 
-    def get_possible(self):
+    def get_isochrones_latlon(self):
         return [iso[:,:2] for iso in self.isochrones]
 
     def get_fastest_route(self, stats = True):
