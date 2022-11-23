@@ -5,7 +5,7 @@ import pandas as pd
 
 
 class Polar:
-	def __init__ (self, polarPath = None, f = None):
+	def __init__ (self, polarPath = None, f = None, df = None):
 		"""
 		Parameters
 		----------
@@ -18,29 +18,29 @@ class Polar:
 		self.twa = []
 		self.speedTable = []
 
-		if f is None:
-			f = open (polarPath, "r")
-
-		tws = f.readline ().split ()
-		for i in range (1,len(tws)):
-			self.tws.append (float (tws[i].replace ('\x02', '')))
-
-		line = f.readline ()
-		while line != "":
-			data = line.split ()
-			twa = float (data[0])
-			self.twa.append(twa)
-			speedline = []
-			for i in range (1,len (data)):
-				speed = float(data[i])
-				speedline.append(speed)
-			self.speedTable.append(speedline)
+		if df:
+			pass
+		else:
+			if f is None:
+				f = open (polarPath, "r")
+			tws = f.readline ().split ()
+			for i in range (1,len(tws)):
+				self.tws.append (float (tws[i].replace ('\x02', '')))
 			line = f.readline ()
-		f.close ()
-
-		df = pd.DataFrame(np.array(self.speedTable))
-		df.columns = self.tws
-		df.index = self.twa
+			while line != "":
+				data = line.split ()
+				twa = float (data[0])
+				self.twa.append(twa)
+				speedline = []
+				for i in range (1,len (data)):
+					speed = float(data[i])
+					speedline.append(speed)
+				self.speedTable.append(speedline)
+				line = f.readline ()
+			f.close ()
+			df = pd.DataFrame(np.array(self.speedTable))
+			df.columns = self.tws
+			df.index = self.twa
 
 		new_tws = list(range(0,int(self.tws[-1])))
 		new_twa = list(range(0,185,5))
