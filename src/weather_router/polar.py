@@ -18,7 +18,7 @@ class Polar:
 		self.twa = []
 		self.speedTable = []
 
-		if df:
+		if isinstance(df, pd.DataFrame):
 			pass
 		else:
 			if f is None:
