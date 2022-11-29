@@ -1,126 +1,77 @@
-import cartopy.crs as ccrs
 import holoviews as hv
-from holoviews import opts, dim
 import geoviews as gv
-import geoviews.feature as gf
-from cartopy import crs
+import hvplot.xarray
+import cartopy.crs as ccrs
+from bokeh.resources import INLINE
 
-import xarray
-import numpy as np
 import pandas as pd
-
-gv.extension('bokeh')
-
-
-
-def visualize_3d(ds,start_point, end_point, isochrones, fastest):
-    """
-        visualize_3d: function
-        :param ds: xarray-dataset
-            an xarray dataset with tws (knots) and twd (deg compass)
-        :param start_point: (float64, float64)
-            (lat,lon) start position
-        :param end_point: (float64, float64)
-            (lat,lon) end position  
-        :isochrones list
-            list of np.arrays containing lat, lon, route, brg_end, dist_wp
-        :fastest list[tuples]
-            list of (lat, lon) of fastest route
-    """
-    ds_ = ds.coarsen({'lat':4, 'lon': 4}, boundary='pad').mean()
-    twd_ = np.deg2rad((270 - (ds_.twd)) % 360)
-    ds2 = twd_.to_dataset(name = 'wind_angle')
-    ds2['tws'] = ds_.tws
-    # Specify the dataset, its coordinates and requested variable 
-    dataset = gv.Dataset(ds, ['lon', 'lat', 'time'], 'tws', crs=crs.PlateCarree())
-    #wind speed background img
-    images = dataset.to(gv.Image,dynamic=True)
-    # Loading coastlines from Cartopy
-    coastline = gf.coastline(line_width=2,line_color='k').opts(projection=ccrs.PlateCarree(),scale='10m')
-    # Loading land mask from Cartopy
-    land = gf.land.options(scale='10m', fill_color='lightgray')
-    #start finish points
-    df = pd.DataFrame([start_point,end_point])
-    df.columns = ['lat','lon']
-    df.index = ['start', 'finish']
-    sample_points = dict(Longitude = df.lon.values, Latitude  = df.lat.values)
-    points = gv.Points(sample_points).opts(size = 20, color = 'black', projection=ccrs.PlateCarree())
-    #plot isochrone at time t
-    iso_list = []
-    for i in range(len(isochrones)):
-        df = pd.DataFrame(isochrones[i])
-        df.columns = ['lat', 'lon','route', 'brg', 'dist_wp']
-        df = df[['lat','lon']]
-        sample_points = dict(Longitude = df.lon.values,Latitude  = df.lat.values)
-        iso_list.append(gv.Points(sample_points).opts(size = 5, color = 'white', projection=ccrs.PlateCarree()))
-    dict_iso = {ds2.time.values[i]:iso_list[i] for i in range(len(isochrones))}
-    iso_map = hv.HoloMap(dict_iso, kdims="time")
-    #plot fastest route
-    fast_list = []
-    for i in range(len(isochrones)):
-        df = pd.DataFrame(fastest)
-        df.columns = ['lat', 'lon']
-        sample_points = dict(Longitude = df.lon.values,Latitude  = df.lat.values)
-        fast_list.append(gv.Points(sample_points).opts(size = 5, color = 'black', projection=ccrs.PlateCarree()))
-    dict_fast = {ds2.time.values[i]:fast_list[i] for i in range(len(isochrones))}
-    fast_map = hv.HoloMap(dict_fast, kdims="time")
-    #plot current point
-    fast_list = []
-    for i in range(len(isochrones)):
-        lat,lon = fastest[i]
-        sample_points = dict(Longitude = lon, Latitude  = lat)
-        fast_list.append(gv.Points(sample_points).opts(size = 10, color = 'green', projection=ccrs.PlateCarree()))
-    dict_fast = {ds2.time.values[i]:fast_list[i] for i in range(len(isochrones))}
-    fast_map_current = hv.HoloMap(dict_fast, kdims="time")
-    # We will normalise the arrow to avoid changes in scale as the time evolves
-    max_mag = ds2.tws.max()
-    lat = ds2.lat
-    lon = ds2.lon
-    # Create a disctionary of VectorField values at each time interval
-    vector_list = []
-    for i in range(len(ds2.time.values)):
-        vector_list.append(gv.VectorField((lon, lat, ds2.wind_angle[i],
-                                    ds2.tws[i]/max_mag), 
-                                    crs=crs.PlateCarree()))
-    dict_vector = {ds2.time.values[i]:vector_list[i] for i in range(len(ds2.time.values))}
-    # create HoloMap object 
-    hmap = hv.HoloMap(dict_vector, kdims="time").opts(opts.VectorField(magnitude=dim('Magnitude'), 
-                                                                color='k', 
-                                                                width=600, height=500,
-                                                                pivot='tip', line_width=1,  
-                                                                rescale_lengths=False,
-                                                                projection=crs.PlateCarree()))
-    # Slider location
-    hv.output(widget_location='bottom')
-    #make plot
-    return images.opts(active_tools=['pan'], cmap='viridis',colorbar=True, 
-                frame_width=900, frame_height=700, clim=(0,30)) * coastline * land * hmap * points *iso_map * fast_map * fast_map_current
+import xarray as xr
+import numpy as np
 
 
 
+class visualize:
+    def __init__(self,
+                ds,
+                start_point, 
+                end_point, 
+                route_df,
+                filename = None):
 
-def visualize_2d(ds,step,start_point, end_point, isochrones, fastest):
-    dataset = gv.Dataset(ds.sel(time = ds.time.values[step]), ['lon', 'lat'], 'tws', crs=crs.PlateCarree())
-    #wind speed background img
-    images = dataset.to(gv.Image)
-    coastline = gf.coastline(line_width=2,line_color='k').opts(projection=ccrs.PlateCarree(),scale='10m')
-    land = gf.land.options(scale='10m', fill_color='lightgray')
-    #start finish points
-    start,finish = (-34,17),(-24,-45)
-    df = pd.DataFrame([start_point,end_point])
-    df.columns = ['lat','lon']
-    df.index = ['start', 'finish']
-    sample_points = dict(Longitude = df.lon.values, Latitude  = df.lat.values)
-    points = gv.Points(sample_points).opts(size = 20, color = 'black', projection=ccrs.PlateCarree())
-    df = pd.DataFrame(isochrones)
-    df.columns = ['lat', 'lon','route', 'dist_wp','brg_end']
-    df = df[['lat','lon']]
-    sample_points = dict(Longitude = df.lon.values,Latitude  = df.lat.values)
-    iso = gv.Points(sample_points).opts(size = 10, color = 'red', projection=ccrs.PlateCarree())
-    df = pd.DataFrame(fastest)
-    df.columns = ['lat', 'lon']
-    sample_points = dict(Longitude = df.lon.values,Latitude  = df.lat.values)
-    fast = gv.Points(sample_points).opts(size = 5, color = 'black', projection=ccrs.PlateCarree())
-    #make plot
-    return images.opts(active_tools=['pan'], cmap='viridis',colorbar=True, 
-                width=900, height=700, clim=(0,30)) * coastline * land * points * iso * fast
+        self.ds = ds
+        self.start_point = start_point
+        self.end_point = end_point
+        self.route_df = route_df
+        self.filename = None
+
+
+    def get_current_lon_lat(self, time):
+        now = self.route_df.loc[time]
+        return gv.Points({'lon': [now.lon], 'lat':[now.lat], 'TWS':[round(now.tws)], 'TWD':[round(now.twd)], 'TWA':[round(now.twa)], 'Boat Speed':[round(now.boat_speed)]}, kdims = ['lon', 'lat'],vdims = ['TWS','TWD','TWA','Boat Speed']).opts(color = 'white', size = 12, tools = ['hover'])
+
+
+    def visualize(self):
+        """
+            visualize: function
+            :param ds: xarray-dataset
+                an xarray dataset with tws (knots) and twd (deg compass)
+            :param start_point: (float64, float64)
+                (lat,lon) start position
+            :param end_point: (float64, float64)
+                (lat,lon) end position  
+            :route_df pandas.Dataframe
+                pandas dataframe containing lat, lon, route, brg_end, dist_wp
+        """
+        wind = self.ds['tws'].hvplot(groupby = 'time', geo = True, tiles = 'OSM',alpha = 0.5, cmap = 'jet', clim=(0,40), hover=False)
+        dsv = self.ds.coarsen({'lat':4, 'lon': 4}, boundary='pad').mean()
+        vector = dsv.hvplot.vectorfield(x='lon', y='lat', angle='wind_angle', mag='tws', hover=False, groupby = 'time', geo = True).opts(magnitude='tws')
+
+
+        sample_points = dict(Longitude = self.route_df.lon.values,Latitude  = self.route_df.lat.values)
+        route = gv.Path(sample_points).opts(color = 'white',line_width=4)
+
+        start = gv.Points({'lon': [self.start_point[1]], 
+                        'lat':[self.start_point[0]]}, 
+                        kdims = ['lon', 'lat']).opts(color = 'green', 
+                                                    size = 8, 
+                                                    tools = ['hover'])
+
+        finish = gv.Points({'lon': [self.end_point[1]], 
+                        'lat':[self.end_point[0]]}, 
+                        kdims = ['lon', 'lat']).opts(color = 'red', 
+                                                    size = 8, 
+                                                    tools = ['hover'])
+
+        current_point = hv.DynamicMap(self.get_current_lon_lat, kdims='time')
+
+        plot = (wind*vector*start*finish*route*current_point).opts(fontscale=1, width=900, height=600)
+        hv.output(widget_location='bottom')
+
+        return plot
+
+    def return_plot(self):
+        return visualize()
+    
+    def save_plot(self):
+        plot = visualize()
+        hvplot.save(plot, 'holoviews_plot.html', resources=INLINE)
