@@ -43,7 +43,7 @@ class Polar:
 			df.index = self.twa
 
 		if isinstance(df, pd.DataFrame):
-			new_tws = list(range(0,int(df.columns[-1])))
+			new_tws = list(range(0,df.columns[-1]))
 		else:
 			new_tws = list(range(0,int(self.tws[-1])))
 		new_twa = list(range(0,185,5))
@@ -81,4 +81,4 @@ class Polar:
 				twa_idx = self.twa.index(self.myround_twa(twa))
 				tws_idx = self.tws.index(self.myround_tws(tws))
 				speed = self.speedTable[twa_idx][tws_idx]
-		return speed
+        return speed
