@@ -30,7 +30,7 @@ class visualize:
         return gv.Points({'lon': [now.lon], 'lat':[now.lat], 'TWS':[round(now.tws)], 'TWD':[round(now.twd)], 'TWA':[round(now.twa)], 'Boat Speed':[round(now.boat_speed)]}, kdims = ['lon', 'lat'],vdims = ['TWS','TWD','TWA','Boat Speed']).opts(color = 'white', size = 12, tools = ['hover'])
 
 
-    def visualize(self):
+    def make_plot(self):
         """
             visualize: function
             :param ds: xarray-dataset
@@ -70,8 +70,8 @@ class visualize:
         return plot
 
     def return_plot(self):
-        return visualize()
+        return make_plot()
     
     def save_plot(self):
-        plot = visualize()
+        plot = make_plot()
         hvplot.save(plot, 'holoviews_plot.html', resources=INLINE)
