@@ -4,9 +4,9 @@ import hvplot.xarray
 import cartopy.crs as ccrs
 from bokeh.resources import INLINE
 
-import pandas as pd
-import xarray as xr
-import numpy as np
+import pandas
+import xarray
+import numpy
 
 
 
@@ -70,8 +70,8 @@ class visualize:
         return plot
 
     def return_plot(self):
-        return make_plot()
+        return self.make_plot()
     
     def save_plot(self):
-        plot = make_plot()
+        plot = self.make_plot()
         hvplot.save(plot, 'holoviews_plot.html', resources=INLINE)
