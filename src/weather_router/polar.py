@@ -43,7 +43,7 @@ class Polar:
 			df.index = self.twa
 
 		if isinstance(df, pd.DataFrame):
-			new_tws = list(range(0,df.columns[-1]))
+			new_tws = list(range(0,int(df.columns[-1])))
 		else:
 			new_tws = list(range(0,int(self.tws[-1])))
 		new_twa = list(range(0,185,5))
