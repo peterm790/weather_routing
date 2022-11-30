@@ -213,5 +213,5 @@ class weather_router:
             df['hours_elapsed'] = df['hours_elapsed']*self.step
             df['days_elapsed'] = df['hours_elapsed']/24
             fastest = df
-        return fastest
+        return fastest.set_index('time')
 
