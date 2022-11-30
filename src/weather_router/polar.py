@@ -81,4 +81,4 @@ class Polar:
 				twa_idx = self.twa.index(self.myround_twa(twa))
 				tws_idx = self.tws.index(self.myround_tws(tws))
 				speed = self.speedTable[twa_idx][tws_idx]
-        return speed
+		return speed
