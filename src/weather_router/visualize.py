@@ -18,11 +18,13 @@ class visualize:
                 route_df,
                 filename = None):
 
-        self.ds = ds
+        
         self.start_point = start_point
         self.end_point = end_point
         self.route_df = route_df
         self.filename = None
+
+        self.ds = ds.sel(time = self.route_df.index.values)
 
 
     def get_current_lon_lat(self, time):
