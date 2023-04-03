@@ -1,2 +1,3 @@
 zarr
 netcdf4
+pytest

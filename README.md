@@ -6,6 +6,15 @@
 
 Usage:
 
+To configure a suitable enviroment for running a routing I recommend using the supplied enviroment.yaml file to create a clean conda enviroment:
+
+```bash
+git clone https://github.com/peterm790/weather_routing
+conda env create -f environment.yml
+conda activate routing
+pip install -e .
+```
+
 To perform a historical routing using a reanalysis model such as ERA5:
 
 - First import packages:
@@ -16,9 +25,7 @@ import xarray as xr
 import zarr
 import numpy as np
 
-from isochronal_weather_router import weather_router
-from polar import Polar
-from visualize import visualize_3d
+from weather_router import isochronal_weather_router, polar, point_validity, visualize
 ```
 
 - Then clean and load the necessary subset of data into memory:
@@ -54,22 +61,26 @@ def get_wind(t, lat, lon):
     return (np.float32(twd_sel.values), np.float32(tws_sel.values))
 ```
 
-- Next we initialize the routing, declaring the `polar class`, `get_wind` function, list of `time_steps`, number of hours between `steps`, `start_point` and `end_point`. It is also possible to explicitly declare the bounds of the routing area in `point_validity_extent` this helps speed up this part of the programme. While `spread` adjusts the range of possible headings to consider, 180 would consider all possibilities but would slow the programme significantly. This routing is relatively short so we will use 140 degrees either side of the bearing to finish. `wake_lim` controls the degree of 'pruning' where 35 degrees is the size of the wake, behind each point. Please see this [article](http://www.tecepe.com.br/nav/vrtool/routing.htm) for a detailed description of pruning techniques.
+- Next we initialize the routing, declaring the `polar class`, `get_wind` function, list of `time_steps`, number of hours between `steps`, `start_point` and `end_point`. It is also possible to explicitly declare the bounds of the routing area in `point_validity` this helps speed up this part of the programme. While `spread` adjusts the range of possible headings to consider, 180 would consider all possibilities but would slow the programme significantly. This routing is relatively short so we will use 140 degrees either side of the bearing to finish. `wake_lim` controls the degree of 'pruning' where 35 degrees is the size of the wake, behind each point. Please see this [article](http://www.tecepe.com.br/nav/vrtool/routing.htm) for a detailed description of pruning techniques.
 
 ```python
-Palma = (39.430, 2.596)
-Gibraltar = (-36.073, -5.354)
+polar = polar.Polar('../weather_routing/test/volvo70.pol')
 
-weatherrouter = weather_router(Polar('polar/volvo70.pol'), 
-                               get_wind, 
-                               time_steps = ds.time.values,
-                               step = 1,
-                               start_point = Palma,
-                               end_point = Gibraltar,
-                               point_validity_extent = [35,-5,40,4],
-                               spread = 140,
-                               wake_lim = 35,
-                              )
+point_valid = point_validity.land_sea_mask(extent = [40,-7,35,4]).point_validity_arr
+
+Palma = (39.283014, 2.527704)
+Gibraltar = (36.073, -5.354)
+
+weatherrouter = isochronal_weather_router.weather_router(polar, 
+                                                         get_wind, 
+                                                         time_steps = ds.time.values,
+                                                         step = 1,
+                                                         start_point = Palma,
+                                                         end_point = Gibraltar,
+                                                         point_validity = point_valid,
+                                                         spread = 140,
+                                                         wake_lim = 35,
+                                                         rounding = 2)
 ```
 
 - To run the routing simply call:
@@ -81,7 +92,8 @@ weatherrouter.route()
 - To get a table of statistics from the fastest route:
 
 ```python
-weatherrouter.get_fastest_route()
+route_df = weatherrouter.get_fastest_route()
+print(route_df)
 ```
 
 ```
@@ -155,7 +167,7 @@ weatherrouter.get_fastest_route()
 - And to visualise the routing call (this util is rather buggy):
 
 ```
-visualize_3d(ds,Palma, Gibraltar, weatherrouter.get_isochrones(), weatherrouter.get_fastest_route(stats = False))
+visualize.visualize(ds,Palma, Gibraltar,route_df, filename = 'route1').save_plot()
 ```
 
 ![plot](bokeh_plot.png)

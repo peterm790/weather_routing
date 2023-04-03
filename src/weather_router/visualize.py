@@ -18,7 +18,18 @@ class visualize:
                 route_df,
                 filename = None):
 
-        
+        """
+        visualize: class
+        :param ds: xarray-dataset
+            an xarray dataset with tws (knots) and twd (deg compass)
+        :param start_point: (float64, float64)
+            (lat,lon) start position
+        :param end_point: (float64, float64)
+            (lat,lon) end position  
+        :route_df pandas.Dataframe
+            pandas dataframe containing lat, lon, route, brg_end, dist_wp
+        """
+                
         self.start_point = start_point
         self.end_point = end_point
         self.route_df = route_df
@@ -33,17 +44,6 @@ class visualize:
 
 
     def make_plot(self):
-        """
-            visualize: function
-            :param ds: xarray-dataset
-                an xarray dataset with tws (knots) and twd (deg compass)
-            :param start_point: (float64, float64)
-                (lat,lon) start position
-            :param end_point: (float64, float64)
-                (lat,lon) end position  
-            :route_df pandas.Dataframe
-                pandas dataframe containing lat, lon, route, brg_end, dist_wp
-        """
         wind = self.ds['tws'].hvplot(groupby = 'time', geo = True, tiles = 'OSM',alpha = 0.5, cmap = 'jet', clim=(0,40), hover=False)
         dsv = self.ds.coarsen({'lat':4, 'lon': 4}, boundary='pad').mean()
         vector = dsv.hvplot.vectorfield(x='lon', y='lat', angle='twd', mag='tws', hover=False, groupby = 'time', geo = True).opts(magnitude='tws')
@@ -76,4 +76,4 @@ class visualize:
     
     def save_plot(self):
         plot = self.make_plot()
-        hvplot.save(plot, 'holoviews_plot.html', resources=INLINE)
+        hvplot.save(plot, f'{filename}.html', resources=INLINE)
