@@ -33,7 +33,7 @@ class visualize:
         self.start_point = start_point
         self.end_point = end_point
         self.route_df = route_df
-        self.filename = None
+        self.filename = filename
 
         self.ds = ds.sel(time = self.route_df.index.values)
 
