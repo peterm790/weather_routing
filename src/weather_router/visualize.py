@@ -46,7 +46,7 @@ class visualize:
         """
         wind = self.ds['tws'].hvplot(groupby = 'time', geo = True, tiles = 'OSM',alpha = 0.5, cmap = 'jet', clim=(0,40), hover=False)
         dsv = self.ds.coarsen({'lat':4, 'lon': 4}, boundary='pad').mean()
-        vector = dsv.hvplot.vectorfield(x='lon', y='lat', angle='wind_angle', mag='tws', hover=False, groupby = 'time', geo = True).opts(magnitude='tws')
+        vector = dsv.hvplot.vectorfield(x='lon', y='lat', angle='twd', mag='tws', hover=False, groupby = 'time', geo = True).opts(magnitude='tws')
 
 
         sample_points = dict(Longitude = self.route_df.lon.values,Latitude  = self.route_df.lat.values)
