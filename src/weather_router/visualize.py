@@ -76,4 +76,4 @@ class visualize:
     
     def save_plot(self):
         plot = self.make_plot()
-        hvplot.save(plot, f'{filename}.html', resources=INLINE)
+        hvplot.save(plot, f'{self.filename}.html', resources=INLINE)
