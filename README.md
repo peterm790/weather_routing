@@ -10,6 +10,7 @@ To configure a suitable enviroment for running a routing I recommend using the s
 
 ```bash
 git clone https://github.com/peterm790/weather_routing
+cd weather_routing
 conda env create -f environment.yml
 conda activate routing
 pip install -e .
