@@ -65,7 +65,7 @@ def get_wind(t, lat, lon):
 - Next we initialize the routing, declaring the `polar class`, `get_wind` function, list of `time_steps`, number of hours between `steps`, `start_point` and `end_point`. It is also possible to explicitly declare the bounds of the routing area in `point_validity` this helps speed up this part of the programme. While `spread` adjusts the range of possible headings to consider, 180 would consider all possibilities but would slow the programme significantly. This routing is relatively short so we will use 140 degrees either side of the bearing to finish. `wake_lim` controls the degree of 'pruning' where 35 degrees is the size of the wake, behind each point. Please see this [article](http://www.tecepe.com.br/nav/vrtool/routing.htm) for a detailed description of pruning techniques.
 
 ```python
-polar = polar.Polar('../weather_routing/test/volvo70.pol')
+polar = polar.Polar('test/volvo70.pol')
 
 point_valid = point_validity.land_sea_mask(extent = [40,-7,35,4]).point_validity_arr
 
