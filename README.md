@@ -29,7 +29,7 @@ import numpy as np
 from weather_router import isochronal_weather_router, polar, point_validity, visualize
 ```
 
-- Then clean and load the necessary subset of data into memory:
+- Then clean and load the necessary subset of weather data into memory:
 
 ```python
 catalog = intake.open_catalog('s3://esip-qhub-public/ecmwf/intake_catalog.yml')
