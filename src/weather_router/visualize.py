@@ -1,23 +1,16 @@
 import holoviews as hv
 import geoviews as gv
 import hvplot.xarray
-import cartopy.crs as ccrs
 from bokeh.resources import INLINE
-
-import pandas
-import xarray
-import numpy
-
 
 
 class visualize:
     def __init__(self,
-                ds,
-                start_point, 
-                end_point, 
-                route_df,
-                filename = None):
-
+                 ds,
+                 start_point, 
+                 end_point, 
+                 route_df,
+                 filename=None):
         """
         visualize: class
         :param ds: xarray-dataset
@@ -34,13 +27,19 @@ class visualize:
         self.end_point = end_point
         self.route_df = route_df
         self.filename = filename
-
-        self.ds = ds.sel(time = self.route_df.index.values)
-
+        self.ds = ds.sel(time=self.route_df.index.values)
 
     def get_current_lon_lat(self, time):
         now = self.route_df.loc[time]
-        return gv.Points({'lon': [now.lon], 'lat':[now.lat], 'TWS':[round(now.tws)], 'TWD':[round(now.twd)], 'TWA':[round(now.twa)], 'Boat Speed':[round(now.boat_speed)]}, kdims = ['lon', 'lat'],vdims = ['TWS','TWD','TWA','Boat Speed']).opts(color = 'white', size = 12, tools = ['hover'])
+        return gv.Points({'lon': [now.lon], 
+                          'lat': [now.lat], 
+                          'TWS': [round(now.tws)],
+                          'TWD': [round(now.twd)], 
+                          'TWA': [round(now.twa)], 
+                          'Boat Speed': [round(now.boat_speed)]},
+                          kdims = ['lon', 'lat'],
+                          vdims = ['TWS','TWD','TWA','Boat Speed'])
+        .opts(color = 'white', size = 12, tools = ['hover']) # noqa: E999
 
 
     def make_plot(self):
