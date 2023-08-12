@@ -206,7 +206,9 @@ class weather_router:
                             else:
                                 possible_at_t = []
                                 for x in list(self.isochrones[-1][:, :4]):
-                                    possible_at_t.append(self.get_possible(*x))
+                                    possible_at_t.append(
+                                        self.get_possible(*x, t)
+                                        )
                                 else:
                                     print('reached dest')
                                     not_done = False
