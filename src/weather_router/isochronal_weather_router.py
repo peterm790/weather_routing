@@ -182,19 +182,21 @@ class weather_router:
             step = 0
             not_done = True
             while not_done:
+                possible_at_t = None
+                possible = None
                 for step, t in enumerate(self.time_steps):
                     print(step)
                     if step == 0:
                         bearing_end = self.getBearing(
-                            (lat, lon),
-                            self.end_point
-                            )
+                                                    (lat, lon),
+                                                    self.end_point
+                                                    )
                         possible = self.get_possible(
-                            lat, lon,
-                            [self.start_point],
-                            bearing_end,
-                            t
-                            )
+                                                    lat, lon,
+                                                    [self.start_point],
+                                                    bearing_end,
+                                                    t
+                                                    )
                     else:
                         possible, dist_wp = self.prune_close_together(possible)
                         self.isochrones.append(self.prune_slow(possible))
@@ -216,7 +218,8 @@ class weather_router:
                                     print('reached dest')
                                     not_done = False
                                     break
-                        possible = sum(possible_at_t, [])
+                        if possible_at_t:
+                            possible = sum(possible_at_t, [])
 
     def get_isochrones(self):
         return self.isochrones
@@ -227,7 +230,7 @@ class weather_router:
     def get_fastest_route(self, stats=True):
         df = pd.DataFrame(self.isochrones[-1])
         df.columns = ['lat', 'lon', 'route', 'brg', 'dist_wp']
-        fastest = df.iloc[pd.to_numeric(df['dist_wp']).idxmin()].route
+        fastest = df.iloc[pd.to_numeric(df['dist_wp'].idxmin())].route
         if stats:
             df = pd.DataFrame(fastest)
             df.columns = ['lat', 'lon']
