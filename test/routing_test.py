@@ -31,6 +31,6 @@ def test_isochrones():
     assert len(weatherrouter.get_isochrones()[0][0]) == 5
 
 def test_fastest():
-    assert weatherrouter.get_fastest_route(stats=True).shape == (4, 11)
+    assert weatherrouter.get_fastest_route(stats=True).shape == (4, 12)
     assert weatherrouter.get_fastest_route(stats=True).iloc[0].boat_speed == 19.52
     assert weatherrouter.get_fastest_route(stats=True).iloc[0].pos == (-34.0, 0.0)
