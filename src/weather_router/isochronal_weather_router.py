@@ -214,10 +214,10 @@ class weather_router:
                                             lat, lon, route, bearing_end, t
                                             )
                                         )
-                                else:
-                                    print('reached dest')
-                                    not_done = False
-                                    break
+                        else:
+                            print('reached dest')
+                            not_done = False
+                            break
                         if possible_at_t:
                             possible = sum(possible_at_t, [])
 
@@ -230,9 +230,13 @@ class weather_router:
     def get_fastest_route(self, stats=True):
         df = pd.DataFrame(self.isochrones[-1])
         df.columns = ['lat', 'lon', 'route', 'brg', 'dist_wp']
-        fastest = df.iloc[pd.to_numeric(df['dist_wp'].idxmin())].route
+        wp_dists = df['dist_wp'].astype(float)
+        fastest = df.iloc[wp_dists.idxmin()].route
         if stats:
-            df = pd.DataFrame(fastest)
+            if fastest[-1] == 'dummy':
+                df = pd.DataFrame(np.array(fastest[:-1]))
+            else:
+                df = pd.DataFrame(np.array(fastest))
             df.columns = ['lat', 'lon']
             df['time'] = self.time_steps[:len(df)]
             df[['twd', 'tws']] = pd.DataFrame(
@@ -255,4 +259,4 @@ class weather_router:
             df['hours_elapsed'] = df['hours_elapsed']*self.step
             df['days_elapsed'] = df['hours_elapsed']/24
             fastest = df
-        return fastest.set_index('time')
+        return fastest  # .set_index('time')

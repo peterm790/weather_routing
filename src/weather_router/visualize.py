@@ -27,7 +27,7 @@ class visualize:
         self.end_point = end_point
         self.route_df = route_df
         self.filename = filename
-        self.ds = ds.sel(time=self.route_df.index.values)
+        self.ds = ds.sel(time=self.route_df.time.values)
 
     def get_current_lon_lat(self, time):
         now = self.route_df.loc[time]
@@ -63,13 +63,11 @@ class visualize:
             groupby='time',
             geo=True
             ).opts(magnitude='tws')
-
         sample_points = dict(
             Longitude=self.route_df.lon.values,
             Latitude=self.route_df.lat.values
             )
         route = gv.Path(sample_points).opts(color='white', line_width=4)
-
         start = gv.Points(
                     {
                         'lon': [self.start_point[1]],
@@ -80,24 +78,23 @@ class visualize:
                                                 size=8,
                                                 tools=['hover']
                                                 )
-
         finish = gv.Points(
-                    {'lon': [self.end_point[1]], 'lat': [self.end_point[0]]},
+                    {
+                        'lon': [self.end_point[1]],
+                        'lat': [self.end_point[0]]
+                    },
                     kdims=['lon', 'lat']).opts(
                                                 color='red',
                                                 size=8,
                                                 tools=['hover']
                                                 )
-
         current_point = hv.DynamicMap(self.get_current_lon_lat, kdims='time')
-
         plot = (wind*vector*start*finish*route*current_point).opts(
                                                                 fontscale=1,
                                                                 width=900,
                                                                 height=600
                                                                 )
         hv.output(widget_location='bottom')
-
         return plot
 
     def return_plot(self):
