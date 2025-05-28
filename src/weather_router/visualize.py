@@ -2,6 +2,8 @@ import holoviews as hv
 import geoviews as gv
 import hvplot.xarray
 from bokeh.resources import INLINE
+import numpy as np
+import pandas as pd
 
 
 class visualize:
@@ -28,9 +30,14 @@ class visualize:
         self.route_df = route_df
         self.filename = filename
         self.ds = ds.sel(time=self.route_df.time.values)
+        twd_rad = np.deg2rad((self.ds['twd'] + 180) % 360)
+        self.ds['twd_rad'] = twd_rad
 
     def get_current_lon_lat(self, time):
-        now = self.route_df.loc[time]
+        # Convert time to pandas Timestamp if it's not already
+        if isinstance(time, np.datetime64):
+            time = pd.Timestamp(time)
+        now = self.route_df.loc[self.route_df.time == time].iloc[0]
         return gv.Points(
             {
                 'lon': [now.lon],
@@ -57,7 +64,7 @@ class visualize:
         vector = dsv.hvplot.vectorfield(
             x='lon',
             y='lat',
-            angle='twd',
+            angle='twd_rad',
             mag='tws',
             hover=False,
             groupby='time',
@@ -88,7 +95,10 @@ class visualize:
                                                 size=8,
                                                 tools=['hover']
                                                 )
-        current_point = hv.DynamicMap(self.get_current_lon_lat, kdims='time')
+        # Create time dimension with values from route_df.time column
+        times = list(self.route_df.time.values)
+        current_point = hv.DynamicMap(self.get_current_lon_lat, kdims=[hv.Dimension('time', values=times)])
+        
         plot = (wind*vector*start*finish*route*current_point).opts(
                                                                 fontscale=1,
                                                                 width=900,
