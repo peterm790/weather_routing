@@ -32,24 +32,27 @@ from weather_router import isochronal_weather_router, polar, point_validity, vis
 - Then clean and load the necessary subset of weather data into memory:
 
 ```python
-catalog = intake.open_catalog('s3://esip-qhub-public/ecmwf/intake_catalog.yml')
-ds = catalog['ERA5-Kerchunk-2020-2022'].to_dask()
+ds = xr.open_zarr(
+    'gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3',
+    chunks=None,
+    storage_options=dict(token='anon'),
+)
+ds = ds.rename({'latitude':'lat', 'longitude':'lon'})
+ds = ds[['10m_u_component_of_wind', '10m_v_component_of_wind']]
 
 ds.coords['lon'] = ((ds.coords['lon'] + 180) % 360) - 180
 ds = ds.sortby(ds.lon)
 ds = ds.sel(lat = slice(40,35)).sel(lon = slice(-7,4))
-ds = ds.sel(time0 = slice('2022-01-13T12:00:00', '2022-01-20T12:00:00'))
+ds = ds.sel(time0= slice('2022-01-13T12:00:00', '2022-01-20T12:00:00'))
 
-u10 = ds.eastward_wind_at_10_metres
-v10 = ds.northward_wind_at_10_metres
+u10 = ds.10m_u_component_of_wind
+v10 = ds.10m_v_component_of_wind
 tws = np.sqrt(v10**2 + u10**2)
 tws = tws*1.94384 #convert m/s to knots
 twd = np.mod(180+np.rad2deg(np.arctan2(u10, v10)),360)
 ds = tws.to_dataset(name = 'tws')
 ds['twd'] = twd
 ds = ds.load()
-ds = ds.interpolate_na(dim = 'time0', method = 'linear') #some nans in this dataset not sure why
-ds = ds.rename({'time0':'time'})
 ```
 - Rather than the routing program attempt to guess the layout of the weather data, to simplify things the users needs to declare a `get_wind()` function
 

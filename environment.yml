@@ -2,6 +2,7 @@ name: routing
 channels:
 - conda-forge
 dependencies:
+- python=3.10
 - bokeh
 - cartopy
 - geopy
@@ -14,8 +15,7 @@ dependencies:
 - notebook
 - numpy
 - pandas
-- s3fs
+- gcsfs
 - xarray
 - zarr
 - zstandard
-
