@@ -17,6 +17,7 @@ class weather_router:
                 spread=110,
                 wake_lim=45,
                 rounding=3,
+                n_points= 100,
                 point_validity=None,
                 point_validity_extent=None
                 ):
@@ -51,6 +52,7 @@ class weather_router:
         self.spread = spread
         self.wake_lim = wake_lim
         self.rounding = rounding
+        self.n_points = n_points
         if point_validity is None:
             from point_validity import land_sea_mask
             if point_validity_extent:
@@ -95,7 +97,8 @@ class weather_router:
     def myround(self, x, base=1):
         return base * round(x/base)
 
-    def get_wake_lims(self, bearing_to_finish):
+    def get_wake_lims(self, lat, lon):
+        bearing_to_finish = self.getBearing((lat, lon), self.end_point)
         backbearing = ((bearing_to_finish - 180) + 360) % 360
         upper = ((backbearing+self.wake_lim) + 360) % 360
         lower = ((backbearing-self.wake_lim) + 360) % 360
@@ -119,7 +122,7 @@ class weather_router:
         keep = [True] * len(arr)
         for i in range(len(arr)):
             if keep[i] is True:
-                wake = self.get_wake_lims(arr[i][3])
+                wake = self.get_wake_lims(arr[i][0], arr[i][1])
                 for j in range(len(arr)):
                     if not i == j:
                         if keep[j] is True:
@@ -148,14 +151,31 @@ class weather_router:
         df['tups'] = df[['round_lat', 'round_lon']].apply(tuple, axis=1)
         df = df.drop_duplicates(subset=['tups'])
         dit_wp_min = df['dist_wp'].min()
-        return df.iloc[:, :-3].to_numpy(), dit_wp_min
+        return df.iloc[:, :2].to_numpy(), dit_wp_min
+    
+    def return_equidistant(self, isochrone):
+        sort_iso = sorted(isochrone , key=lambda k: [k[1], k[0]])
+        y = [x[0] for x in sort_iso]
+        x = [x[1] for x in sort_iso]
+        xd = np.diff(x)
+        yd = np.diff(y)
+        dist = np.sqrt(xd**2+yd**2)
+        u = np.cumsum(dist)
+        u = np.hstack([[0],u])
+        t = np.linspace(0,u.max(),self.n_points)
+        xn = np.interp(t, u, x)
+        yn = np.interp(t, u, y)
+        return np.column_stack([yn,xn])
 
-    def get_possible(self, lat_init, lon_init, route, bearing_end, t):
+    def get_possible(self, lat_init, lon_init, t):
+        bearing_end = self.getBearing(
+                            (lat_init, lon_init),
+                            self.end_point
+                            )
         possible = []
         twd, tws = self.get_wind(t, lat_init, lon_init)
         upper = int(bearing_end) + self.spread
         lower = int(bearing_end) - self.spread
-        route.append('dummy')
         for heading in range(lower, upper, 10):
             heading = ((int(heading) + 360) % 360)
             twa = self.getTWA_from_heading(heading, twd)
@@ -166,11 +186,9 @@ class weather_router:
                 (lat_init, lon_init), heading
                 )
             lat, lon = end_point.latitude, end_point.longitude
-            route = route[:-1]
-            route.append((lat, lon))
             if self.point_validity(lat, lon):
                 bearing_end = self.getBearing((lat, lon), self.end_point)
-                possible.append([lat, lon, route, bearing_end])
+                possible.append([lat, lon])
         return possible
 
     def route(self):
@@ -182,44 +200,37 @@ class weather_router:
             step = 0
             not_done = True
             while not_done:
-                possible_at_t = None
                 possible = None
                 for step, t in enumerate(self.time_steps):
                     print(step)
                     if step == 0:
-                        bearing_end = self.getBearing(
-                                                    (lat, lon),
-                                                    self.end_point
-                                                    )
                         possible = self.get_possible(
-                                                    lat, lon,
-                                                    [self.start_point],
-                                                    bearing_end,
-                                                    t
+                                                    lat, lon, t
                                                     )
                     else:
                         possible, dist_wp = self.prune_close_together(possible)
-                        self.isochrones.append(self.prune_slow(possible))
+                        isochrone = self.prune_slow(possible)
+                        isochrone = self.return_equidistant(isochrone)
+                        self.isochrones.append(isochrone)
                         if dist_wp > 30:
                             if step == len(self.time_steps)-1:
                                 print('out of time')
                                 not_done = False
                                 break
                             else:
-                                possible_at_t = []
-                                for x in list(self.isochrones[-1][:, :4]):
-                                    lat, lon, route, bearing_end = x
-                                    possible_at_t.append(
+                                possible = []
+                                for x in self.isochrones[-1]:
+                                    lat, lon = x
+                                    possible.append(
                                         self.get_possible(
-                                            lat, lon, route, bearing_end, t
+                                            lat, lon, t
                                             )
                                         )
+                                possible = sum(possible, [])
                         else:
                             print('reached dest')
                             not_done = False
                             break
-                        if possible_at_t:
-                            possible = sum(possible_at_t, [])
 
     def get_isochrones(self):
         return self.isochrones
