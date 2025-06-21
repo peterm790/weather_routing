@@ -17,6 +17,7 @@ class weather_router:
                 spread=110,
                 wake_lim=45,
                 rounding=3,
+                n_points=50,
                 point_validity=None,
                 point_validity_extent=None
                 ):
@@ -34,6 +35,8 @@ class weather_router:
                 (lat,lon) start position
             :param end_point: (float64, float64)
                 (lat,lon) end position
+            :param n_points: int
+                number of points to maintain in each isochrone for algorithm speed control
             :param point_validity: function
                 supplied function to return boolean or none to use inbuilt
             :param point_validity_extent: list
@@ -51,8 +54,10 @@ class weather_router:
         self.spread = spread
         self.wake_lim = wake_lim
         self.rounding = rounding
+        self.n_points = n_points
         if point_validity is None:
-            from point_validity import land_sea_mask
+            from . import point_validity
+            land_sea_mask = point_validity.land_sea_mask
             if point_validity_extent:
                 lsm = land_sea_mask(point_validity_extent)
             else:
@@ -130,6 +135,56 @@ class weather_router:
                                 keep[j] = False
         return arr[keep]
 
+    def return_equidistant(self, isochrone):
+        sort_iso = sorted(isochrone , key=lambda k: [k[1], k[0]])
+        y = [x[0] for x in sort_iso]
+        x = [x[1] for x in sort_iso]
+        xd = np.diff(x)
+        yd = np.diff(y)
+        dist = np.sqrt(xd**2+yd**2)
+        u = np.cumsum(dist)
+        u = np.hstack([[0],u])
+        t = np.linspace(0,u.max(),self.n_points)
+        xn = np.interp(t, u, x)
+        yn = np.interp(t, u, y)
+        return np.column_stack([yn,xn])
+
+    def prune_equidistant(self, possible):
+        """
+        Prune points using equidistant spacing approach.
+        Returns the original points closest to equidistant points along the isochrone curve.
+        """
+        arr = np.array(possible, dtype=object)
+        df = pd.DataFrame(arr)
+        df['dist_wp'] = self.get_dist_wp(arr)
+        
+        # Get equidistant points along the curve
+        isochrone_points = [(row[0], row[1]) for row in possible]
+        equidistant_points = self.return_equidistant(isochrone_points)
+        
+        # Find closest original points to each equidistant point
+        selected_indices = []
+        for eq_point in equidistant_points:
+            min_dist = float('inf')
+            closest_idx = 0
+            for i, (lat, lon, route, bearing) in enumerate(possible):
+                # Calculate distance between original point and equidistant point
+                dist = np.sqrt((lat - eq_point[0])**2 + (lon - eq_point[1])**2)
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_idx = i
+            if closest_idx not in selected_indices:
+                selected_indices.append(closest_idx)
+        
+        # Return selected points and minimum distance to waypoint
+        selected_points = [possible[i] for i in selected_indices]
+        selected_arr = np.array(selected_points, dtype=object)
+        selected_df = pd.DataFrame(selected_arr)
+        selected_df['dist_wp'] = self.get_dist_wp(selected_arr)
+        dist_wp_min = selected_df['dist_wp'].min()
+        
+        return selected_arr, dist_wp_min
+
     def prune_close_together(self, possible):
         arr = np.array(possible, dtype=object)
         df = pd.DataFrame(arr)
@@ -198,7 +253,7 @@ class weather_router:
                                                     t
                                                     )
                     else:
-                        possible, dist_wp = self.prune_close_together(possible)
+                        possible, dist_wp = self.prune_equidistant(possible)
                         self.isochrones.append(self.prune_slow(possible))
                         if dist_wp > 30:
                             if step == len(self.time_steps)-1:
@@ -229,7 +284,8 @@ class weather_router:
 
     def get_fastest_route(self, stats=True):
         df = pd.DataFrame(self.isochrones[-1])
-        df.columns = ['lat', 'lon', 'route', 'brg', 'dist_wp']
+        df.columns = ['lat', 'lon', 'route', 'brg']
+        df['dist_wp'] = self.get_dist_wp(self.isochrones[-1])
         wp_dists = df['dist_wp'].astype(float)
         fastest = df.iloc[wp_dists.idxmin()].route
         if stats:
