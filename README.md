@@ -84,7 +84,8 @@ weatherrouter = isochronal_weather_router.weather_router(polar,
                                                          point_validity = point_valid,
                                                          spread = 140,
                                                          wake_lim = 35,
-                                                         rounding = 2)
+                                                         n_points = 50,
+                                                         rounding = 3)
 ```
 
 - To run the routing simply call:

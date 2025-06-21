@@ -17,7 +17,7 @@ class weather_router:
                 spread=110,
                 wake_lim=45,
                 rounding=3,
-                n_points=50,
+                n_points=100,
                 point_validity=None,
                 point_validity_extent=None
                 ):
