@@ -17,9 +17,10 @@ class weather_router:
                 spread=110,
                 wake_lim=45,
                 rounding=3,
-                n_points=100,
+                n_points=50,
                 point_validity=None,
-                point_validity_extent=None
+                point_validity_extent=None,
+                tack_penalty=0.5
                 ):
         """
         weather_router: class
@@ -41,6 +42,8 @@ class weather_router:
                 supplied function to return boolean or none to use inbuilt
             :param point_validity_extent: list
                 extent to trim point validity to. [lat1,lon1,lat2,lon2]
+            :param tack_penalty: float
+                speed penalty (0.0-1.0) applied when tacking (TWA changes sides)
         """
 
         self.end = False
@@ -55,6 +58,7 @@ class weather_router:
         self.wake_lim = wake_lim
         self.rounding = rounding
         self.n_points = n_points
+        self.tack_penalty = tack_penalty
         if point_validity is None:
             from . import point_validity
             land_sea_mask = point_validity.land_sea_mask
@@ -96,6 +100,21 @@ class weather_router:
     def getTWA_from_heading(self, bearing, TWD):
         TWA = bearing - TWD
         return (TWA + 180) % 360 - 180
+
+    def is_tacking(self, current_twa, previous_twa):
+        """
+        Determine if the boat is tacking (TWA changes from one side to another).
+        Returns True if tacking, False otherwise.
+        """
+        if previous_twa is None:
+            return False
+        
+        # Check if TWA crossed from port to starboard or vice versa
+        # Port side: negative TWA, Starboard side: positive TWA
+        previous_side = previous_twa >= 0  # True for starboard, False for port
+        current_side = current_twa >= 0    # True for starboard, False for port
+        
+        return previous_side != current_side
 
     def myround(self, x, base=1):
         return base * round(x/base)
@@ -167,7 +186,8 @@ class weather_router:
         for eq_point in equidistant_points:
             min_dist = float('inf')
             closest_idx = 0
-            for i, (lat, lon, route, bearing) in enumerate(possible):
+            for i, row in enumerate(possible):
+                lat, lon = row[0], row[1]
                 # Calculate distance between original point and equidistant point
                 dist = np.sqrt((lat - eq_point[0])**2 + (lon - eq_point[1])**2)
                 if dist < min_dist:
@@ -205,7 +225,7 @@ class weather_router:
         dit_wp_min = df['dist_wp'].min()
         return df.iloc[:, :-3].to_numpy(), dit_wp_min
 
-    def get_possible(self, lat_init, lon_init, route, bearing_end, t):
+    def get_possible(self, lat_init, lon_init, route, bearing_end, t, previous_twa=None):
         possible = []
         twd, tws = self.get_wind(t, lat_init, lon_init)
         upper = int(bearing_end) + self.spread
@@ -215,6 +235,11 @@ class weather_router:
             heading = ((int(heading) + 360) % 360)
             twa = self.getTWA_from_heading(heading, twd)
             speed = self.polar.getSpeed(tws, np.abs(twa))
+            
+            # Apply tack penalty if tacking
+            if self.is_tacking(twa, previous_twa):
+                speed = speed * (1.0 - self.tack_penalty)
+            
             end_point = geopy.distance.great_circle(
                 nautical=speed*self.step
                 ).destination(
@@ -225,7 +250,8 @@ class weather_router:
             route.append((lat, lon))
             if self.point_validity(lat, lon):
                 bearing_end = self.getBearing((lat, lon), self.end_point)
-                possible.append([lat, lon, route, bearing_end])
+                # Store current TWA with the possible position for next iteration
+                possible.append([lat, lon, route, bearing_end, twa])
         return possible
 
     def route(self):
@@ -253,8 +279,10 @@ class weather_router:
                                                     t
                                                     )
                     else:
+                        possible = self.prune_slow(np.array(possible, dtype=object))
                         possible, dist_wp = self.prune_equidistant(possible)
-                        self.isochrones.append(self.prune_slow(possible))
+                        print(len(possible))
+                        self.isochrones.append(possible)
                         if dist_wp > 30:
                             if step == len(self.time_steps)-1:
                                 print('out of time')
@@ -262,12 +290,11 @@ class weather_router:
                                 break
                             else:
                                 possible_at_t = []
-                                for x in list(self.isochrones[-1][:, :4]):
-                                    lat, lon, route, bearing_end = x
+                                for x in list(self.isochrones[-1]):
+                                    lat, lon, route, bearing_end, previous_twa = x
                                     possible_at_t.append(
                                         self.get_possible(
-                                            lat, lon, route, bearing_end, t
-                                            )
+                                            lat, lon, route, bearing_end, t, previous_twa)
                                         )
                         else:
                             print('reached dest')
@@ -284,7 +311,7 @@ class weather_router:
 
     def get_fastest_route(self, stats=True):
         df = pd.DataFrame(self.isochrones[-1])
-        df.columns = ['lat', 'lon', 'route', 'brg']
+        df.columns = ['lat', 'lon', 'route', 'brg', 'twa_at_arrival']
         df['dist_wp'] = self.get_dist_wp(self.isochrones[-1])
         wp_dists = df['dist_wp'].astype(float)
         fastest = df.iloc[wp_dists.idxmin()].route
@@ -308,9 +335,24 @@ class weather_router:
             df['twa'] = df.apply(
                 lambda x: self.getTWA_from_heading(x.heading, x.twd), axis=1
                 )
-            df['boat_speed'] = df.apply(
+            
+            # Calculate base boat speed and tack penalties
+            df['base_boat_speed'] = df.apply(
                 lambda x: self.polar.getSpeed(x.tws, np.abs(x.twa)), axis=1
                 )
+            
+            # Determine if each leg involves tacking
+            df['is_tacking'] = False
+            df['boat_speed'] = df['base_boat_speed']
+            
+            for i in range(1, len(df)):
+                current_twa = df.iloc[i]['twa']
+                previous_twa = df.iloc[i-1]['twa']
+                is_tacking = self.is_tacking(current_twa, previous_twa)
+                df.iloc[i, df.columns.get_loc('is_tacking')] = is_tacking
+                if is_tacking:
+                    df.iloc[i, df.columns.get_loc('boat_speed')] = df.iloc[i]['base_boat_speed'] * (1.0 - self.tack_penalty)
+            
             df['hours_elapsed'] = list(df.index)
             df['hours_elapsed'] = df['hours_elapsed']*self.step
             df['days_elapsed'] = df['hours_elapsed']/24

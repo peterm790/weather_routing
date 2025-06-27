@@ -30,7 +30,7 @@ class visualize:
         self.route_df = route_df
         self.filename = filename
         self.ds = ds.sel(time=self.route_df.time.values)
-        twd_rad = np.deg2rad((self.ds['twd'] + 180) % 360)
+        twd_rad = np.deg2rad(self.ds['twd'])
         self.ds['twd_rad'] = twd_rad
 
     def get_current_lon_lat(self, time):
