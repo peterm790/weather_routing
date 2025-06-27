@@ -20,7 +20,10 @@ class weather_router:
                 n_points=50,
                 point_validity=None,
                 point_validity_extent=None,
-                tack_penalty=0.5
+                tack_penalty=0.5,
+                finish_size=20,
+                optimise_n_points=None,
+                optimise_window=24
                 ):
         """
         weather_router: class
@@ -44,6 +47,12 @@ class weather_router:
                 extent to trim point validity to. [lat1,lon1,lat2,lon2]
             :param tack_penalty: float
                 speed penalty (0.0-1.0) applied when tacking (TWA changes sides)
+            :param finish_size: int
+                size of the finish area in nm
+            :param optimise_n_points: int
+                number of points to maintain in each isochrone during optimization (defaults to n_points*2)
+            :param optimise_window: int
+                time step window size (±) for optimization constraint search (default: 24)
         """
 
         self.end = False
@@ -59,6 +68,9 @@ class weather_router:
         self.rounding = rounding
         self.n_points = n_points
         self.tack_penalty = tack_penalty
+        self.finish_size = finish_size
+        self.optimise_n_points = optimise_n_points if optimise_n_points is not None else n_points * 2
+        self.optimise_window = optimise_window
         if point_validity is None:
             from . import point_validity
             land_sea_mask = point_validity.land_sea_mask
@@ -223,7 +235,7 @@ class weather_router:
         df['tups'] = df[['round_lat', 'round_lon']].apply(tuple, axis=1)
         df = df.drop_duplicates(subset=['tups'])
         dit_wp_min = df['dist_wp'].min()
-        return df.iloc[:, :-3].to_numpy(), dit_wp_min
+        return df.iloc[:, :5].to_numpy(), dit_wp_min
 
     def get_possible(self, lat_init, lon_init, route, bearing_end, t, previous_twa=None):
         possible = []
@@ -283,7 +295,7 @@ class weather_router:
                         possible, dist_wp = self.prune_equidistant(possible)
                         print(len(possible))
                         self.isochrones.append(possible)
-                        if dist_wp > 30:
+                        if dist_wp > self.finish_size:
                             if step == len(self.time_steps)-1:
                                 print('out of time')
                                 not_done = False
@@ -358,3 +370,187 @@ class weather_router:
             df['days_elapsed'] = df['hours_elapsed']/24
             fastest = df
         return fastest  # .set_index('time')
+
+    def calculate_isochrone_spacing(self, isochrones):
+        """
+        Calculate spacing between isochrone points for optimization constraints.
+        """
+        spacings = []
+        for isochrone in isochrones:
+            if len(isochrone) < 2:
+                spacings.append(1.0)
+                continue
+            
+            # Extract lat/lon coordinates 
+            points = [(float(row[0]), float(row[1])) for row in isochrone]
+            
+            # Sort points by longitude then latitude for consistent spacing calculation
+            sort_points = sorted(points, key=lambda k: [k[1], k[0]])
+            y = [x[0] for x in sort_points]
+            x = [x[1] for x in sort_points]
+            
+            # Calculate cumulative distances along the isochrone curve
+            xd = np.diff(x)
+            yd = np.diff(y)
+            dist = np.sqrt(xd**2 + yd**2)
+            total_distance = np.sum(dist)
+            
+            # Average spacing between points
+            avg_spacing = total_distance / len(points) if len(points) > 1 else 1.0
+            spacings.append(avg_spacing)
+            
+        return spacings
+
+    def is_within_optimization_region(self, lat, lon, time_step_idx, route_points, spacings):
+        """
+        Check if a point is within the optimization region defined by the previous route.
+        Uses closest constraint center within a ±24 window around the current time step.
+        """
+        if len(route_points) == 0 or len(spacings) == 0:
+            return True
+        
+        # Define search window around current time step
+        window_size = self.optimise_window
+        start_idx = max(0, time_step_idx - window_size)
+        end_idx = min(len(route_points), time_step_idx + window_size + 1)
+        
+        # Find the closest route point within the window
+        min_distance_to_center = float('inf')
+        closest_spacing = spacings[min(time_step_idx, len(spacings) - 1)]  # fallback
+        
+        for i in range(start_idx, end_idx):
+            center_lat, center_lon = route_points[i]
+            distance_to_center = np.sqrt((lat - center_lat)**2 + (lon - center_lon)**2)
+            if distance_to_center < min_distance_to_center:
+                min_distance_to_center = distance_to_center
+                closest_spacing = spacings[min(i, len(spacings) - 1)]
+        
+        # Use the closest spacing as constraint radius
+        constraint_radius = closest_spacing
+        
+        return min_distance_to_center <= constraint_radius
+
+    def get_possible_optimized(self, lat_init, lon_init, route, bearing_end, t, time_step_idx, route_points, spacings, previous_twa=None):
+        """
+        Generate possible next positions with optimization region constraints.
+        """
+        possible = []
+        twd, tws = self.get_wind(t, lat_init, lon_init)
+        upper = int(bearing_end) + self.spread
+        lower = int(bearing_end) - self.spread
+        route.append('dummy')
+        
+        for heading in range(lower, upper, 10):
+            heading = ((int(heading) + 360) % 360)
+            twa = self.getTWA_from_heading(heading, twd)
+            speed = self.polar.getSpeed(tws, np.abs(twa))
+            
+            # Apply tack penalty if tacking
+            if self.is_tacking(twa, previous_twa):
+                speed = speed * (1.0 - self.tack_penalty)
+            
+            end_point = geopy.distance.great_circle(
+                nautical=speed*self.step
+                ).destination(
+                (lat_init, lon_init), heading
+                )
+            lat, lon = end_point.latitude, end_point.longitude
+            route = route[:-1]
+            route.append((lat, lon))
+            
+            # Check point validity and optimization region constraints
+            if (self.point_validity(lat, lon) and 
+                self.is_within_optimization_region(lat, lon, time_step_idx, route_points, spacings)):
+                bearing_end = self.getBearing((lat, lon), self.end_point)
+                possible.append([lat, lon, route, bearing_end, twa])
+        
+        return possible
+
+    def optimize(self, previous_route, previous_isochrones):
+        """
+        Run optimization pass using previous route and isochrones to constrain search space.
+        Uses only prune_slow and prune_close_together for finer granularity.
+        
+        :param previous_route: list of (lat, lon) tuples from previous routing
+        :param previous_isochrones: list of isochrone arrays from previous routing
+        :return: optimized route
+        """
+        print("Starting optimization pass...")
+        
+        # Calculate spacing constraints from previous isochrones
+        spacings = self.calculate_isochrone_spacing(previous_isochrones) * 2
+
+        if spacings[0] < self.finish_size:
+            print('constraint overriden')
+            spacings = [self.finish_size] * len(spacings)
+        
+        # Extract route points for constraint centers
+        route_points = [(float(point[0]), float(point[1])) for point in previous_route]
+        
+        # Reset for optimization pass
+        lat, lon = self.start_point
+        self.isochrones = []
+        
+        if not self.point_validity(lat, lon):
+            print('start point error')
+            return None
+        
+        step = 0
+        not_done = True
+        while not_done:
+            possible_at_t = None
+            possible = None
+            for step, t in enumerate(self.time_steps):
+                print(f"Optimize step {step}")
+                if step == 0:
+                    bearing_end = self.getBearing((lat, lon), self.end_point)
+                    possible = self.get_possible_optimized(
+                        lat, lon,
+                        [self.start_point],
+                        bearing_end,
+                        t,
+                        step,
+                        route_points,
+                        spacings
+                        )
+                else:
+                    # Apply prune_slow, prune_close_together, and equidistant pruning with double n_points
+                    possible = self.prune_slow(np.array(possible, dtype=object))
+                    possible, dist_wp = self.prune_close_together(possible)
+                    
+                    # Add equidistant pruning if we still have too many points
+                    if len(possible) > self.optimise_n_points:
+                        # Temporarily use optimise_n_points for pruning
+                        original_n_points = self.n_points
+                        self.n_points = self.optimise_n_points
+                        possible, _ = self.prune_equidistant(possible)
+                        self.n_points = original_n_points
+                    
+                    print(f"Optimize isochrone points: {len(possible)}, dist_wp_min: {dist_wp}")
+                    self.isochrones.append(possible)
+                    
+                    if dist_wp > self.finish_size:
+                        if step == len(self.time_steps)-1:
+                            print('optimization out of time')
+                            not_done = False
+                            break
+                        else:
+                            possible_at_t = []
+                            for x in list(self.isochrones[-1]):
+                                lat, lon, route, bearing_end, previous_twa = x
+                                possible_at_t.append(
+                                    self.get_possible_optimized(
+                                        lat, lon, route, bearing_end, t, step, 
+                                        route_points, spacings, previous_twa
+                                        )
+                                    )
+                    else:
+                        print('optimization reached dest')
+                        not_done = False
+                        break
+                    
+                    if possible_at_t:
+                        possible = sum(possible_at_t, [])
+        
+        print("Optimization pass complete")
+        return self.get_fastest_route()
