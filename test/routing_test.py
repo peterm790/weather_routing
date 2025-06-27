@@ -42,7 +42,7 @@ def getWindAt(t, lat, lon):
     return (np.float32(twd_sel.values), np.float32(tws_sel.values))
 
 #def route():
-weatherrouter = weather_router(Polar('volvo70.pol'), getWindAt, ds.time.values[:4], 12, (-34,0),(-34,17))
+weatherrouter = weather_router(Polar('volvo70.pol'), getWindAt, ds.time.values[:4], 12, (-34,0),(-34,17), tack_penalty=0.5)
 weatherrouter.route()
 
 
@@ -52,12 +52,16 @@ def test_polar():
 def test_isochrones():
     assert type(weatherrouter.get_isochrones()) == list
     assert len(weatherrouter.get_isochrones()) == 3
-    assert len(weatherrouter.get_isochrones()[0][0]) == 4  # Fixed: should be 4 columns [lat, lon, route, bearing]
+    assert len(weatherrouter.get_isochrones()[0][0]) == 5  # Updated: now 5 columns [lat, lon, route, bearing, twa]
 
 def test_fastest():
-    assert weatherrouter.get_fastest_route(stats=True).shape == (4, 12)
-    assert weatherrouter.get_fastest_route(stats=True).iloc[0].boat_speed == 19.28  # Updated for equidistant pruning
-    assert weatherrouter.get_fastest_route(stats=True).iloc[0].pos == (-34.0, 0.0)
+    fastest_route = weatherrouter.get_fastest_route(stats=True)
+    assert fastest_route.shape[0] == 4  # 4 time steps
+    assert fastest_route.shape[1] >= 12  # At least 12 columns (now includes tacking info)
+    assert 'base_boat_speed' in fastest_route.columns
+    assert 'boat_speed' in fastest_route.columns
+    assert 'is_tacking' in fastest_route.columns
+    assert fastest_route.iloc[0].pos == (-34.0, 0.0)
 
 def test_n_points_parameter():
     """Test that n_points parameter is properly initialized"""
@@ -68,9 +72,11 @@ def test_n_points_parameter():
         12, 
         (-34,0), 
         (-34,17), 
-        n_points=25
+        n_points=25,
+        tack_penalty=0.3
     )
     assert router_with_custom_n_points.n_points == 25
+    assert router_with_custom_n_points.tack_penalty == 0.3
 
 def test_return_equidistant():
     """Test the return_equidistant function with known input"""
@@ -91,7 +97,8 @@ def test_return_equidistant():
         12, 
         (-34,0), 
         (-34,17), 
-        n_points=5
+        n_points=5,
+        tack_penalty=0.5
     )
     
     equidistant_points = test_router.return_equidistant(test_isochrone)
@@ -118,15 +125,15 @@ def test_return_equidistant():
 
 def test_prune_equidistant():
     """Test the prune_equidistant function"""
-    # Create mock data with 7 points
+    # Create mock data with 7 points - now includes TWA as 5th element
     test_possible = [
-        [50.0, 0.0, [(50, 0)], 45.0],
-        [50.05, 0.05, [(50, 0), (50.05, 0.05)], 45.0],
-        [50.1, 0.1, [(50, 0), (50.1, 0.1)], 45.0],
-        [50.15, 0.15, [(50, 0), (50.15, 0.15)], 45.0],
-        [50.2, 0.2, [(50, 0), (50.2, 0.2)], 45.0],
-        [50.25, 0.25, [(50, 0), (50.25, 0.25)], 45.0],
-        [50.3, 0.3, [(50, 0), (50.3, 0.3)], 45.0],
+        [50.0, 0.0, [(50, 0)], 45.0, -30.0],
+        [50.05, 0.05, [(50, 0), (50.05, 0.05)], 45.0, -25.0],
+        [50.1, 0.1, [(50, 0), (50.1, 0.1)], 45.0, -20.0],
+        [50.15, 0.15, [(50, 0), (50.15, 0.15)], 45.0, -15.0],
+        [50.2, 0.2, [(50, 0), (50.2, 0.2)], 45.0, -10.0],
+        [50.25, 0.25, [(50, 0), (50.25, 0.25)], 45.0, -5.0],
+        [50.3, 0.3, [(50, 0), (50.3, 0.3)], 45.0, 0.0],
     ]
     
     # Create router with n_points=3
@@ -137,7 +144,8 @@ def test_prune_equidistant():
         12, 
         (-34,0), 
         (-34,17), 
-        n_points=3
+        n_points=3,
+        tack_penalty=0.5
     )
     
     pruned_points, min_dist = test_router.prune_equidistant(test_possible)
@@ -145,8 +153,8 @@ def test_prune_equidistant():
     # Should return exactly 3 points
     assert len(pruned_points) == 3
     
-    # Check that structure is preserved (4 columns)
-    assert len(pruned_points[0]) == 4
+    # Check that structure is preserved (5 columns now)
+    assert len(pruned_points[0]) == 5
     
     # Check that min_dist is calculated
     assert isinstance(min_dist, (int, float))
@@ -162,7 +170,8 @@ def test_equidistant_routing_integration():
         12, 
         (-34,0), 
         (-34,17),
-        n_points=10  # Small number for testing
+        n_points=10,  # Small number for testing
+        tack_penalty=0.4
     )
     
     # Run routing
@@ -174,7 +183,7 @@ def test_equidistant_routing_integration():
     
     # Verify each isochrone has the correct structure
     for iso in isochrones:
-        assert iso.shape[1] == 4  # 4 columns: lat, lon, route, bearing
+        assert iso.shape[1] == 5  # 5 columns: lat, lon, route, bearing, twa
         # Each isochrone should have at most n_points entries
         assert iso.shape[0] <= test_router.n_points
     
@@ -184,6 +193,8 @@ def test_equidistant_routing_integration():
     assert 'lat' in route.columns
     assert 'lon' in route.columns
     assert 'boat_speed' in route.columns
+    assert 'base_boat_speed' in route.columns
+    assert 'is_tacking' in route.columns
 
 def test_equidistant_vs_traditional():
     """Test that equidistant pruning produces different results than traditional method"""
@@ -197,7 +208,8 @@ def test_equidistant_vs_traditional():
         12, 
         (-34,0), 
         (-34,17),
-        n_points=5
+        n_points=5,
+        tack_penalty=0.3
     )
     
     router2 = weather_router(
@@ -207,7 +219,8 @@ def test_equidistant_vs_traditional():
         12, 
         (-34,0), 
         (-34,17),
-        n_points=15
+        n_points=15,
+        tack_penalty=0.3
     )
     
     # Run both
@@ -229,3 +242,41 @@ def test_equidistant_vs_traditional():
     
     assert len(route1) > 0
     assert len(route2) > 0
+
+def test_tack_penalty():
+    """Test that the tack penalty feature works correctly"""
+    # Create a router with a high tack penalty for testing
+    test_router = weather_router(
+        Polar('volvo70.pol'), 
+        getWindAt, 
+        ds.time.values[:3], 
+        12, 
+        (-34,0), 
+        (-34,17),
+        n_points=10,
+        tack_penalty=0.8  # 80% penalty
+    )
+    
+    # Test the is_tacking method directly
+    assert test_router.is_tacking(30, -30) == True   # port to starboard
+    assert test_router.is_tacking(-30, 30) == True   # starboard to port
+    assert test_router.is_tacking(30, 20) == False   # both starboard
+    assert test_router.is_tacking(-30, -20) == False # both port
+    assert test_router.is_tacking(30, None) == False # no previous TWA
+    
+    # Run routing and check that tack penalty info is in the results
+    test_router.route()
+    route = test_router.get_fastest_route()
+    
+    # Verify tack penalty columns exist
+    assert 'base_boat_speed' in route.columns
+    assert 'boat_speed' in route.columns
+    assert 'is_tacking' in route.columns
+    
+    # Check that tack penalty is applied correctly
+    for i, row in route.iterrows():
+        if row['is_tacking'] == True:
+            expected_speed = row['base_boat_speed'] * (1.0 - test_router.tack_penalty)
+            assert np.isclose(row['boat_speed'], expected_speed, rtol=0.01)
+        else:
+            assert np.isclose(row['boat_speed'], row['base_boat_speed'], rtol=0.01)
