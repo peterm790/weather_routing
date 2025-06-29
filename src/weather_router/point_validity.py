@@ -33,8 +33,9 @@ class land_sea_mask():
             res = False
         return res
 
-    def point_validity(self, lat, lon):
-        return self.lsm.sel(latitude = lat,longitude = lon, method = 'nearest').values <= 0.1
+    #def point_validity(self, lat, lon):
+        # method = nearest is problematic
+    #    return self.lsm.sel(latitude = lat,longitude = lon, method = 'nearest').values <= 0.1
 
 
 

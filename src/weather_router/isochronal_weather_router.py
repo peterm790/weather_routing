@@ -18,7 +18,6 @@ class weather_router:
                 wake_lim=45,
                 rounding=3,
                 n_points=50,
-                point_validity=None,
                 point_validity_extent=None,
                 tack_penalty=0.5,
                 finish_size=20,
@@ -41,8 +40,6 @@ class weather_router:
                 (lat,lon) end position
             :param n_points: int
                 number of points to maintain in each isochrone for algorithm speed control
-            :param point_validity: function
-                supplied function to return boolean or none to use inbuilt
             :param point_validity_extent: list
                 extent to trim point validity to. [lat1,lon1,lat2,lon2]
             :param tack_penalty: float
@@ -71,16 +68,14 @@ class weather_router:
         self.finish_size = finish_size
         self.optimise_n_points = optimise_n_points if optimise_n_points is not None else n_points * 2
         self.optimise_window = optimise_window
-        if point_validity is None:
-            from . import point_validity
-            land_sea_mask = point_validity.land_sea_mask
-            if point_validity_extent:
-                lsm = land_sea_mask(point_validity_extent)
-            else:
-                lsm = land_sea_mask()
-            self.point_validity = lsm.point_validity_arr
+
+        from . import point_validity
+        land_sea_mask = point_validity.land_sea_mask
+        if point_validity_extent:
+            lsm = land_sea_mask(point_validity_extent)
         else:
-            self.point_validity = point_validity
+            lsm = land_sea_mask()
+        self.point_validity = lsm.point_validity_arr
 
     def get_min_dist_wp(self, isochrones):
         dists = []
@@ -278,7 +273,7 @@ class weather_router:
                 possible_at_t = None
                 possible = None
                 for step, t in enumerate(self.time_steps):
-                    print(step)
+                    #print(step)
                     if step == 0:
                         bearing_end = self.getBearing(
                                                     (lat, lon),
@@ -293,7 +288,7 @@ class weather_router:
                     else:
                         possible = self.prune_slow(np.array(possible, dtype=object))
                         possible, dist_wp = self.prune_equidistant(possible)
-                        print(len(possible))
+                        print('step', step, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
                         self.isochrones.append(possible)
                         if dist_wp > self.finish_size:
                             if step == len(self.time_steps)-1:
@@ -320,11 +315,36 @@ class weather_router:
 
     def get_isochrones_latlon(self):
         return [iso[:, :2] for iso in self.isochrones]
+    
+    def get_optimized_isochrones(self):
+        """Get isochrones from optimization pass"""
+        if hasattr(self, 'optimized_isochrones'):
+            return self.optimized_isochrones
+        else:
+            return []
+    
+    def get_optimized_isochrones_latlon(self):
+        """Get lat/lon coordinates of isochrones from optimization pass"""
+        if hasattr(self, 'optimized_isochrones'):
+            return [iso[:, :2] for iso in self.optimized_isochrones]
+        else:
+            return []
 
-    def get_fastest_route(self, stats=True):
-        df = pd.DataFrame(self.isochrones[-1])
+    def get_fastest_route(self, stats=True, use_optimized=False):
+        """
+        Get the fastest route from either regular or optimized isochrones.
+        
+        :param stats: whether to include detailed statistics
+        :param use_optimized: if True, use optimized isochrones; if False, use regular isochrones
+        """
+        if use_optimized and hasattr(self, 'optimized_isochrones') and len(self.optimized_isochrones) > 0:
+            isochrones_to_use = self.optimized_isochrones
+        else:
+            isochrones_to_use = self.isochrones
+        
+        df = pd.DataFrame(isochrones_to_use[-1])
         df.columns = ['lat', 'lon', 'route', 'brg', 'twa_at_arrival']
-        df['dist_wp'] = self.get_dist_wp(self.isochrones[-1])
+        df['dist_wp'] = self.get_dist_wp(isochrones_to_use[-1])
         wp_dists = df['dist_wp'].astype(float)
         fastest = df.iloc[wp_dists.idxmin()].route
         if stats:
@@ -374,11 +394,12 @@ class weather_router:
     def calculate_isochrone_spacing(self, isochrones):
         """
         Calculate spacing between isochrone points for optimization constraints.
+        Returns spacing in nautical miles.
         """
         spacings = []
         for isochrone in isochrones:
             if len(isochrone) < 2:
-                spacings.append(1.0)
+                spacings.append(5.0)  # Default 5nm spacing
                 continue
             
             # Extract lat/lon coordinates 
@@ -386,17 +407,15 @@ class weather_router:
             
             # Sort points by longitude then latitude for consistent spacing calculation
             sort_points = sorted(points, key=lambda k: [k[1], k[0]])
-            y = [x[0] for x in sort_points]
-            x = [x[1] for x in sort_points]
             
-            # Calculate cumulative distances along the isochrone curve
-            xd = np.diff(x)
-            yd = np.diff(y)
-            dist = np.sqrt(xd**2 + yd**2)
-            total_distance = np.sum(dist)
+            # Calculate cumulative distances using geographical distances
+            total_distance = 0.0
+            for i in range(len(sort_points) - 1):
+                dist_nm = geopy.distance.great_circle(sort_points[i], sort_points[i+1]).nm
+                total_distance += dist_nm
             
-            # Average spacing between points
-            avg_spacing = total_distance / len(points) if len(points) > 1 else 1.0
+            # Average spacing between points in nautical miles
+            avg_spacing = total_distance / (len(points) - 1) if len(points) > 1 else 5.0
             spacings.append(avg_spacing)
             
         return spacings
@@ -404,7 +423,8 @@ class weather_router:
     def is_within_optimization_region(self, lat, lon, time_step_idx, route_points, spacings):
         """
         Check if a point is within the optimization region defined by the previous route.
-        Uses closest constraint center within a ±24 window around the current time step.
+        Uses closest constraint center within a window around the current time step.
+        All distances calculated in nautical miles.
         """
         if len(route_points) == 0 or len(spacings) == 0:
             return True
@@ -420,12 +440,13 @@ class weather_router:
         
         for i in range(start_idx, end_idx):
             center_lat, center_lon = route_points[i]
-            distance_to_center = np.sqrt((lat - center_lat)**2 + (lon - center_lon)**2)
+            # Use geographical distance in nautical miles
+            distance_to_center = geopy.distance.great_circle((lat, lon), (center_lat, center_lon)).nm
             if distance_to_center < min_distance_to_center:
                 min_distance_to_center = distance_to_center
                 closest_spacing = spacings[min(i, len(spacings) - 1)]
         
-        # Use the closest spacing as constraint radius
+        # Use the closest spacing as constraint radius (in nautical miles)
         constraint_radius = closest_spacing
         
         return min_distance_to_center <= constraint_radius
@@ -475,21 +496,18 @@ class weather_router:
         :param previous_isochrones: list of isochrone arrays from previous routing
         :return: optimized route
         """
-        print("Starting optimization pass...")
-        
         # Calculate spacing constraints from previous isochrones
-        spacings = self.calculate_isochrone_spacing(previous_isochrones) * 2
+        base_spacings = self.calculate_isochrone_spacing(previous_isochrones)
+        spacings = [s * 2 for s in base_spacings]
 
         if spacings[0] < self.finish_size:
-            print('constraint overriden')
             spacings = [self.finish_size] * len(spacings)
         
         # Extract route points for constraint centers
         route_points = [(float(point[0]), float(point[1])) for point in previous_route]
-        
-        # Reset for optimization pass
+
         lat, lon = self.start_point
-        self.isochrones = []
+        self.optimized_isochrones = []
         
         if not self.point_validity(lat, lon):
             print('start point error')
@@ -501,7 +519,6 @@ class weather_router:
             possible_at_t = None
             possible = None
             for step, t in enumerate(self.time_steps):
-                print(f"Optimize step {step}")
                 if step == 0:
                     bearing_end = self.getBearing((lat, lon), self.end_point)
                     possible = self.get_possible_optimized(
@@ -526,17 +543,16 @@ class weather_router:
                         possible, _ = self.prune_equidistant(possible)
                         self.n_points = original_n_points
                     
-                    print(f"Optimize isochrone points: {len(possible)}, dist_wp_min: {dist_wp}")
-                    self.isochrones.append(possible)
+                    print('step', step, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
+                    self.optimized_isochrones.append(possible)
                     
                     if dist_wp > self.finish_size:
                         if step == len(self.time_steps)-1:
-                            print('optimization out of time')
                             not_done = False
                             break
                         else:
                             possible_at_t = []
-                            for x in list(self.isochrones[-1]):
+                            for x in list(self.optimized_isochrones[-1]):
                                 lat, lon, route, bearing_end, previous_twa = x
                                 possible_at_t.append(
                                     self.get_possible_optimized(
@@ -545,12 +561,10 @@ class weather_router:
                                         )
                                     )
                     else:
-                        print('optimization reached dest')
                         not_done = False
                         break
                     
                     if possible_at_t:
                         possible = sum(possible_at_t, [])
         
-        print("Optimization pass complete")
-        return self.get_fastest_route()
+        return self.get_fastest_route(use_optimized=True)
