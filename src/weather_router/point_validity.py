@@ -8,14 +8,25 @@ import os
 
 
 class land_sea_mask():
-    def __init__ (self, extent=None):
+    def __init__ (self, extent=None, file=None):
         """
             :param extent [lat1,lon1,lat2,lon2]
+            :param file: path to nc file or xarray dataset
         """
-        lsm = xr.open_dataset(os.path.join(os.path.dirname(__file__), 'data/era5_land-sea-mask.nc'))
-        lsm.coords['longitude'] = (lsm.coords['longitude'] + 180) % 360 - 180
-        lsm = lsm.sortby(lsm.longitude)
-        lsm = lsm.lsm[0].load()
+        if file is None:
+            lsm = xr.open_dataset(os.path.join(os.path.dirname(__file__), 'data/era5_land-sea-mask.nc'))
+        elif isinstance(file, xr.Dataset):
+            lsm = file
+        else:
+            lsm = xr.open_dataset(file)
+        
+        if 'longitude' in lsm.coords:
+            lsm.coords['longitude'] = (lsm.coords['longitude'] + 180) % 360 - 180
+            lsm = lsm.sortby(lsm.longitude)
+        
+        if 'lsm' in lsm:
+            lsm = lsm.lsm[0].load()
+        
         if extent:
             lat1,lon1,lat2,lon2 = extent
             lsm = lsm.sel(latitude = slice(max([lat1, lat2]),min([lat1, lat2]))).sel(longitude = slice(min([lon1, lon2]),max([lon1, lon2])))

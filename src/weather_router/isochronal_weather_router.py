@@ -18,12 +18,13 @@ class weather_router:
                 wake_lim=45,
                 rounding=3,
                 n_points=50,
-                point_validity_extent=None,
-                tack_penalty=0.5,
-                finish_size=20,
-                optimise_n_points=None,
-                optimise_window=24
-                ):
+            point_validity_extent=None,
+            point_validity_file=None,
+            tack_penalty=0.5,
+            finish_size=20,
+            optimise_n_points=None,
+            optimise_window=24
+            ):
         """
         weather_router: class
             :param polar: class
@@ -42,6 +43,8 @@ class weather_router:
                 number of points to maintain in each isochrone for algorithm speed control
             :param point_validity_extent: list
                 extent to trim point validity to. [lat1,lon1,lat2,lon2]
+            :param point_validity_file: str or xarray.Dataset
+                Path to land-sea mask netcdf file or xarray dataset.
             :param tack_penalty: float
                 speed penalty (0.0-1.0) applied when tacking (TWA changes sides)
             :param finish_size: int
@@ -72,9 +75,9 @@ class weather_router:
         from . import point_validity
         land_sea_mask = point_validity.land_sea_mask
         if point_validity_extent:
-            lsm = land_sea_mask(point_validity_extent)
+            lsm = land_sea_mask(point_validity_extent, file=point_validity_file)
         else:
-            lsm = land_sea_mask()
+            lsm = land_sea_mask(file=point_validity_file)
         self.point_validity = lsm.point_validity_arr
 
     def get_min_dist_wp(self, isochrones):
