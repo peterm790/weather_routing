@@ -7,7 +7,7 @@ image = (
     modal.Image.debian_slim()
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20241129_1"}) 
+    .env({"FORCE_BUILD": "20251206_3"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -44,7 +44,9 @@ def get_route(
     import xarray as xr
     import numpy as np
     import json
-    import asyncio
+    import queue
+    import threading
+    import time
     # Import here to ensure they are available in the container
     from weather_router import isochronal_weather_router, polar, point_validity
 
@@ -138,10 +140,10 @@ def get_route(
     # Initialize Router
     step_val = 3 if freq == "3hr" else 1
     
-    progress_queue = asyncio.Queue()
+    progress_queue = queue.Queue()
 
     def progress_callback(step, dist_wp):
-        progress_queue.put_nowait({
+        progress_queue.put({
             "type": "progress",
             "step": step,
             "dist": float(dist_wp)
@@ -164,31 +166,91 @@ def get_route(
     )
 
     # Run Routing
-    async def generate():
-        # Start routing in a separate task
-        routing_task = asyncio.create_task(asyncio.to_thread(weatherrouter.route))
+    def generate():
+        # Start routing in a separate thread
+        routing_thread = threading.Thread(target=weatherrouter.route)
+        routing_thread.start()
         
         # Consume progress updates while routing is running
-        while not routing_task.done():
+        while routing_thread.is_alive():
             try:
-                # Wait for progress or task completion
-                progress = await asyncio.wait_for(progress_queue.get(), timeout=0.1)
-                yield json.dumps(progress) + "\n"
-            except asyncio.TimeoutError:
+                # Wait for progress or timeout
+                progress = progress_queue.get(timeout=0.1)
+                # Pad chunk to exceed 1024 bytes to avoid buffering
+                chunk = json.dumps(progress) + "\n"
+                if len(chunk.encode('utf-8')) < 1024:
+                    chunk += " " * (1024 - len(chunk.encode('utf-8')))
+                yield chunk
+            except queue.Empty:
                 continue
         
-        await routing_task
+        routing_thread.join()
 
-        # Yield any remaining progress messages
+        # Yield any remaining progress messages from routing
         while not progress_queue.empty():
-            progress = await progress_queue.get()
-            yield json.dumps(progress) + "\n"
+            try:
+                progress = progress_queue.get_nowait()
+                # Pad chunk to exceed 1024 bytes to avoid buffering
+                chunk = json.dumps(progress) + "\n"
+                if len(chunk.encode('utf-8')) < 1024:
+                    chunk += " " * (1024 - len(chunk.encode('utf-8')))
+                yield chunk
+            except queue.Empty:
+                break
 
         initial_route = weatherrouter.get_fastest_route(stats=False)
         
+        # Yield initial route
+        if isinstance(initial_route, list):
+            initial_route_data = initial_route
+        else:
+            initial_route_copy = initial_route.copy()
+            if 'time' in initial_route_copy.columns:
+                initial_route_copy['time'] = initial_route_copy['time'].astype(str)
+            initial_route_data = initial_route_copy.to_dict(orient="records")
+        
+        chunk = json.dumps({
+            "type": "initial",
+            "data": initial_route_data
+        }) + "\n"
+        if len(chunk.encode('utf-8')) < 1024:
+            chunk += " " * (1024 - len(chunk.encode('utf-8')))
+        yield chunk
+
         initial_isochrones = weatherrouter.get_isochrones()
-        # optimize is CPU bound, run in thread
-        await asyncio.to_thread(weatherrouter.optimize, initial_route, initial_isochrones)
+        
+        # Start optimization in a separate thread to stream progress
+        optimize_thread = threading.Thread(target=weatherrouter.optimize, args=(initial_route, initial_isochrones))
+        optimize_thread.start()
+
+        # Consume progress updates while optimization is running
+        while optimize_thread.is_alive():
+            try:
+                # Wait for progress or timeout
+                progress = progress_queue.get(timeout=0.1)
+                # Mark optimization progress differently if needed, or reuse 'progress' type
+                # Here we reuse 'progress' type, but you could add a 'stage': 'optimization' field if desired
+                # For now, we assume client handles step/dist same way
+                chunk = json.dumps(progress) + "\n"
+                if len(chunk.encode('utf-8')) < 1024:
+                    chunk += " " * (1024 - len(chunk.encode('utf-8')))
+                yield chunk
+            except queue.Empty:
+                continue
+        
+        optimize_thread.join()
+
+        # Yield any remaining progress messages from optimization
+        while not progress_queue.empty():
+            try:
+                progress = progress_queue.get_nowait()
+                chunk = json.dumps(progress) + "\n"
+                if len(chunk.encode('utf-8')) < 1024:
+                    chunk += " " * (1024 - len(chunk.encode('utf-8')))
+                yield chunk
+            except queue.Empty:
+                break
+
         route_df = weatherrouter.get_fastest_route(use_optimized=True)
         
         # Process and yield final route
@@ -199,11 +261,20 @@ def get_route(
                 route_df['time'] = route_df['time'].astype(str)
             route_data = route_df.to_dict(orient="records")
             
-        yield json.dumps({
+        chunk = json.dumps({
             "type": "result", 
             "data": route_data
         }) + "\n"
+        if len(chunk.encode('utf-8')) < 1024:
+            chunk += " " * (1024 - len(chunk.encode('utf-8')))
+        yield chunk
 
-    return StreamingResponse(generate(), media_type="application/x-ndjson")
-
-    return StreamingResponse(generate(), media_type="application/x-ndjson")
+    return StreamingResponse(
+        generate(), 
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )

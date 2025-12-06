@@ -39,16 +39,23 @@ curl -X GET "https://peterm790--weather-routing-get-route.modal.run?start_lat=43
 
 ### Response Format
 
-The API returns a stream of Newline Delimited JSON (NDJSON) objects. Two types of messages are returned:
+The API returns a stream of Newline Delimited JSON (NDJSON) objects. The sequence of messages is:
 
-1. `progress`: Real-time updates on the routing algorithm's progress.
-2. `result`: The final optimized route.
+1. `progress`: Real-time updates on the initial routing algorithm's progress.
+2. `initial`: The initial route calculated before optimization.
+3. `progress`: Real-time updates on the optimization pass.
+4. `result`: The final optimized route.
 
 Each message has the following structure:
 
 **Progress Message:**
 ```json
 {"type": "progress", "step": 5, "dist": 120.5}
+```
+
+**Initial Route Message:**
+```json
+{"type": "initial", "data": [...route points...]}
 ```
 
 **Result Message:**
@@ -69,9 +76,10 @@ with requests.get(url, stream=True) as r:
             msg = json.loads(line)
             if msg['type'] == 'progress':
                 print(f"Step: {msg['step']}, Distance: {msg['dist']}")
+            elif msg['type'] == 'initial':
+                print("Received initial route")
             elif msg['type'] == 'result':
                 print("Received final route")
-                # Process route data: msg['data']
 ```
 
 Each route point object contains:
