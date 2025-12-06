@@ -540,25 +540,25 @@ class weather_router:
                         route_points,
                         spacings
                         )
-                    else:
-                        # Apply prune_slow, prune_close_together, and equidistant pruning with double n_points
-                        possible = self.prune_slow(np.array(possible, dtype=object))
-                        possible, dist_wp = self.prune_close_together(possible)
-                        
-                        # Add equidistant pruning if we still have too many points
-                        if len(possible) > self.optimise_n_points:
-                            # Temporarily use optimise_n_points for pruning
-                            original_n_points = self.n_points
-                            self.n_points = self.optimise_n_points
-                            possible, _ = self.prune_equidistant(possible)
-                            self.n_points = original_n_points
-                        
-                        print('step', step, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
-                        if self.progress_callback:
-                            self.progress_callback(step, dist_wp)
-                        self.optimized_isochrones.append(possible)
-                        
-                        if dist_wp > self.finish_size:
+                else:
+                    # Apply prune_slow, prune_close_together, and equidistant pruning with double n_points
+                    possible = self.prune_slow(np.array(possible, dtype=object))
+                    possible, dist_wp = self.prune_close_together(possible)
+                    
+                    # Add equidistant pruning if we still have too many points
+                    if len(possible) > self.optimise_n_points:
+                        # Temporarily use optimise_n_points for pruning
+                        original_n_points = self.n_points
+                        self.n_points = self.optimise_n_points
+                        possible, _ = self.prune_equidistant(possible)
+                        self.n_points = original_n_points
+                    
+                    print('step', step, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
+                    if self.progress_callback:
+                        self.progress_callback(step, dist_wp)
+                    self.optimized_isochrones.append(possible)
+                    
+                    if dist_wp > self.finish_size:
                         if step == len(self.time_steps)-1:
                             not_done = False
                             break
@@ -576,7 +576,7 @@ class weather_router:
                         not_done = False
                         break
                     
-                    if possible_at_t:
-                        possible = sum(possible_at_t, [])
+                if possible_at_t:
+                    possible = sum(possible_at_t, [])
         
         return self.get_fastest_route(use_optimized=True)
