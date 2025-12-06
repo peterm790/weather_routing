@@ -23,7 +23,8 @@ class weather_router:
             tack_penalty=0.5,
             finish_size=20,
             optimise_n_points=None,
-            optimise_window=24
+            optimise_window=24,
+            progress_callback=None
             ):
         """
         weather_router: class
@@ -53,6 +54,8 @@ class weather_router:
                 number of points to maintain in each isochrone during optimization (defaults to n_points*2)
             :param optimise_window: int
                 time step window size (±) for optimization constraint search (default: 24)
+            :param progress_callback: function, optional
+                Callback function to report progress. Called with (step, dist_to_finish).
         """
 
         self.end = False
@@ -71,6 +74,8 @@ class weather_router:
         self.finish_size = finish_size
         self.optimise_n_points = optimise_n_points if optimise_n_points is not None else n_points * 2
         self.optimise_window = optimise_window
+        self.progress_callback = progress_callback
+
 
         from . import point_validity
         land_sea_mask = point_validity.land_sea_mask
@@ -292,6 +297,8 @@ class weather_router:
                         possible = self.prune_slow(np.array(possible, dtype=object))
                         possible, dist_wp = self.prune_equidistant(possible)
                         print('step', step, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
+                        if self.progress_callback:
+                            self.progress_callback(step, dist_wp)
                         self.isochrones.append(possible)
                         if dist_wp > self.finish_size:
                             if step == len(self.time_steps)-1:

@@ -1,0 +1,9 @@
+xarray[complete]>=2025.1.2
+zarr>=3.0.8
+icechunk
+numpy
+pandas
+geopy
+fsspec
+s3fs
+git+https://github.com/peterm790/weather_routing
