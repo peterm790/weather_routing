@@ -557,13 +557,12 @@ class weather_router:
                         if self.progress_callback:
                             self.progress_callback(step, dist_wp, possible)
                         self.optimized_isochrones.append(possible)
-                        
                         if dist_wp > self.finish_size:
-                        if step == len(self.time_steps)-1:
-                            not_done = False
-                            break
-                        else:
-                            possible_at_t = []
+                            if step == len(self.time_steps) - 1:
+                                not_done = False
+                                break
+                            else:
+                                possible_at_t = []
                             for x in list(self.optimized_isochrones[-1]):
                                 lat, lon, route, bearing_end, previous_twa = x
                                 possible_at_t.append(
