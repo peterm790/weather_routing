@@ -50,7 +50,12 @@ Each message has the following structure:
 
 **Progress Message:**
 ```json
-{"type": "progress", "step": 5, "dist": 120.5}
+{
+  "type": "progress", 
+  "step": 5, 
+  "dist": 120.5,
+  "isochrones": [[-34.0, 18.0], [-34.1, 18.1], ...]
+}
 ```
 
 **Initial Route Message:**

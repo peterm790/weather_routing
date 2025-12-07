@@ -55,7 +55,7 @@ class weather_router:
             :param optimise_window: int
                 time step window size (±) for optimization constraint search (default: 24)
             :param progress_callback: function, optional
-                Callback function to report progress. Called with (step, dist_to_finish).
+                Callback function to report progress. Called with (step, dist_to_finish, isochrones).
         """
 
         self.end = False
@@ -298,7 +298,7 @@ class weather_router:
                         possible, dist_wp = self.prune_equidistant(possible)
                         print('step', step, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
                         if self.progress_callback:
-                            self.progress_callback(step, dist_wp)
+                            self.progress_callback(step, dist_wp, possible)
                         self.isochrones.append(possible)
                         if dist_wp > self.finish_size:
                             if step == len(self.time_steps)-1:
@@ -552,13 +552,13 @@ class weather_router:
                         self.n_points = self.optimise_n_points
                         possible, _ = self.prune_equidistant(possible)
                         self.n_points = original_n_points
-                    
-                    print('step', step, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
-                    if self.progress_callback:
-                        self.progress_callback(step, dist_wp)
-                    self.optimized_isochrones.append(possible)
-                    
-                    if dist_wp > self.finish_size:
+                        
+                        print('step', step, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
+                        if self.progress_callback:
+                            self.progress_callback(step, dist_wp, possible)
+                        self.optimized_isochrones.append(possible)
+                        
+                        if dist_wp > self.finish_size:
                         if step == len(self.time_steps)-1:
                             not_done = False
                             break

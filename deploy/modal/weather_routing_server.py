@@ -7,7 +7,7 @@ image = (
     modal.Image.debian_slim()
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20251206_3"}) 
+    .env({"FORCE_BUILD": "20251207_1"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -142,11 +142,20 @@ def get_route(
     
     progress_queue = queue.Queue()
 
-    def progress_callback(step, dist_wp):
+    def progress_callback(step, dist_wp, isochrones):
+        # Simplify isochrones for transport - extract only lat/lon
+        # Assuming isochrones is a list of [lat, lon, ...]
+        simple_isochrones = []
+        if isochrones is not None:
+            # Extract just lat/lon from the possible points
+            # Each point in 'possible' is [lat, lon, route, bearing_end, twa]
+            simple_isochrones = [[float(p[0]), float(p[1])] for p in isochrones]
+
         progress_queue.put({
             "type": "progress",
             "step": step,
-            "dist": float(dist_wp)
+            "dist": float(dist_wp),
+            "isochrones": simple_isochrones
         })
 
     weatherrouter = isochronal_weather_router.weather_router(
