@@ -36,8 +36,10 @@ class land_sea_mask():
             lat1,lon1,lat2,lon2 = extent
             lsm = lsm.sel(latitude = slice(max([lat1, lat2]),min([lat1, lat2]))).sel(longitude = slice(min([lon1, lon2]),max([lon1, lon2])))
         
-        self.lsm = lsm.load()
-        self.lsm_arr = self.lsm.values
+        lsm = lsm.load()
+
+        self.lsm = lsm
+        self.lsm_arr = lsm.values
         self.lats = list(lsm.latitude.values)
         self.lons = list(lsm.longitude.values)
 
@@ -52,8 +54,7 @@ class land_sea_mask():
             return res
         if self.method == 'nearest':
             # method = nearest is problematic at low resolutions
-            mask = self.lsm.sel(latitude = lat,longitude = lon, method = 'nearest').values <= 0.1
-            return mask.compute()
+            return self.lsm.sel(latitude = lat,longitude = lon, method = 'nearest').values <= 0.1
 
 
 
