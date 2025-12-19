@@ -7,7 +7,7 @@ image = (
     modal.Image.debian_slim()
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20251219_5"}) 
+    .env({"FORCE_BUILD": "20251219_7"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -130,13 +130,15 @@ def get_route(
 
     # Download land-sea mask
     print('loading lsm zarr')
-    ds_lsm = xr.open_dataset('s3://peterm790/GEBCO_2025_land_mask.zarr/',
+    ds_lsm = xr.open_dataset('s3://peterm790/GEBCO_2025_land_mask_sharded.zarr/',
                                 engine = 'zarr',
                                 storage_options={"anon": True})
     ds_lsm = ds_lsm.rename({'lat':'latitude', 'lon':'longitude'})
     ds_lsm = ds_lsm.sortby('latitude', ascending = False)
     ds_lsm = ds_lsm.fillna(0)
-
+    lat1,lon1,lat2,lon2 = [min_lat, min_lon, max_lat, max_lon]
+    ds_lsm = ds_lsm.sel(latitude = slice(max([lat1, lat2]),min([lat1, lat2]))).sel(longitude = slice(min([lon1, lon2]),max([lon1, lon2])))
+    ds_lsm = ds_lsm.load()
 
     #import os
     #mask_url = "https://peterm790.s3.af-south-1.amazonaws.com/era5_land-sea-mask.nc"

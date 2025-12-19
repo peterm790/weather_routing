@@ -31,11 +31,12 @@ class land_sea_mask():
         
         if 'lsm' in lsm:
             lsm = lsm.lsm
-        
+
         if extent:
             lat1,lon1,lat2,lon2 = extent
             lsm = lsm.sel(latitude = slice(max([lat1, lat2]),min([lat1, lat2]))).sel(longitude = slice(min([lon1, lon2]),max([lon1, lon2])))
-        #self.lsm = lsm.load()
+        
+        self.lsm = lsm.load()
         self.lsm_arr = self.lsm.values
         self.lats = list(lsm.latitude.values)
         self.lons = list(lsm.longitude.values)
