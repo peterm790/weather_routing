@@ -7,7 +7,7 @@ image = (
     modal.Image.debian_slim()
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20251207_1"}) 
+    .env({"FORCE_BUILD": "20251219_1"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -127,15 +127,20 @@ def get_route(
     volvo70_polar = polar.Polar(f=io.StringIO(polar_data))
 
     # Download land-sea mask
-    import os
-    mask_url = "https://peterm790.s3.af-south-1.amazonaws.com/era5_land-sea-mask.nc"
-    mask_file = "/tmp/era5_land-sea-mask.nc"
+    ds_lsm = xr.open_dataset('s3://peterm790/GEBCO_2025_land_mask.zarr/').rename({'lat':'latitude', 'lon':'longitude'})
+    ds_lsm = ds_lsm.sortby('latitude', ascending = False)
+    ds_lsm = ds_lsm.fillna(0)
+
+
+    #import os
+    #mask_url = "https://peterm790.s3.af-south-1.amazonaws.com/era5_land-sea-mask.nc"
+    #mask_file = "/tmp/era5_land-sea-mask.nc"
     
-    if not os.path.exists(mask_file):
-        print(f"Downloading mask from {mask_url}...")
-        with urllib.request.urlopen(mask_url) as response:
-            with open(mask_file, 'wb') as out_file:
-                out_file.write(response.read())
+    #if not os.path.exists(mask_file):
+    #    print(f"Downloading mask from {mask_url}...")
+    #    with urllib.request.urlopen(mask_url) as response:
+    #        with open(mask_file, 'wb') as out_file:
+    #            out_file.write(response.read())
 
     # Initialize Router
     step_val = 3 if freq == "3hr" else 1
@@ -166,7 +171,7 @@ def get_route(
         start_point=start_point,
         end_point=end_point,
         point_validity_extent=[min_lat, min_lon, max_lat, max_lon],
-        point_validity_file=mask_file,
+        point_validity_file=ds_lsm,
         spread=130,
         wake_lim=30,
         rounding=2,
