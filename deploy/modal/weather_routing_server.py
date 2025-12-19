@@ -7,7 +7,7 @@ image = (
     modal.Image.debian_slim()
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20251219_1"}) 
+    .env({"FORCE_BUILD": "20251219_5"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -58,6 +58,7 @@ def get_route(
 
     # Load weather data
     # Note: Using the URL from the original script
+    print('Opening weather zarr')
     ds = xr.open_zarr(
         "https://data.dynamical.org/noaa/gfs/forecast/latest.zarr",
         decode_timedelta=True,
@@ -120,6 +121,7 @@ def get_route(
         return (np.float32(twd_sel.values), np.float32(tws_sel.values))
 
     # Load Polar
+    print('fetching polar')
     url = f"https://peterm790.s3.af-south-1.amazonaws.com/polars/{polar_file}.pol"
     with urllib.request.urlopen(url) as response:
         polar_data = response.read().decode('utf-8')
@@ -127,7 +129,11 @@ def get_route(
     volvo70_polar = polar.Polar(f=io.StringIO(polar_data))
 
     # Download land-sea mask
-    ds_lsm = xr.open_dataset('s3://peterm790/GEBCO_2025_land_mask.zarr/').rename({'lat':'latitude', 'lon':'longitude'})
+    print('loading lsm zarr')
+    ds_lsm = xr.open_dataset('s3://peterm790/GEBCO_2025_land_mask.zarr/',
+                                engine = 'zarr',
+                                storage_options={"anon": True})
+    ds_lsm = ds_lsm.rename({'lat':'latitude', 'lon':'longitude'})
     ds_lsm = ds_lsm.sortby('latitude', ascending = False)
     ds_lsm = ds_lsm.fillna(0)
 
@@ -144,7 +150,7 @@ def get_route(
 
     # Initialize Router
     step_val = 3 if freq == "3hr" else 1
-    
+    print('creating routing queue')
     progress_queue = queue.Queue()
 
     def progress_callback(step, dist_wp, isochrones):
