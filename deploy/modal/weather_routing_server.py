@@ -7,7 +7,7 @@ image = (
     modal.Image.debian_slim()
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20251219_8"}) 
+    .env({"FORCE_BUILD": "20251219_9"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -37,6 +37,7 @@ def get_route(
     init_time: int = -1,
     lead_time_start: int = 0,
     freq: str = "1hr",
+    crank_step: int = 10,
     polar_file: str = "volvo70"
 ):
     from fastapi import Response
@@ -52,6 +53,9 @@ def get_route(
 
     if freq not in ["1hr", "3hr"]:
         return Response(content="freq must be '1hr' or '3hr'", status_code=400)
+
+    if crank_step <= 0:
+        return Response(content="crank_step must be a positive integer (minutes)", status_code=400)
 
     start_point = (start_lat, start_lon)
     end_point = (end_lat, end_lon)
@@ -103,8 +107,23 @@ def get_route(
         'valid_time'
     ], errors='ignore')
 
-    u10 = ds['wind_u_10m']
-    v10 = ds['wind_v_10m']
+    # Interpolate wind components to the finer crank cadence, then recompute TWS/TWD.
+    # This avoids angular wrap issues that can occur when interpolating direction directly.
+    if 'time' not in ds.dims or ds.sizes.get('time', 0) < 2:
+        raise ValueError("Weather dataset has insufficient time steps to interpolate")
+
+    time_vals = ds.time.values
+    dt = np.timedelta64(int(crank_step), 'm')
+
+    # Build a uniform time grid at crank_step minutes, ensuring the final original time is included.
+    new_times = np.arange(time_vals[0], time_vals[-1], dt)
+    if new_times.size == 0 or new_times[-1] != time_vals[-1]:
+        new_times = np.concatenate([new_times, np.array([time_vals[-1]], dtype=time_vals.dtype)])
+
+    ds_interp = ds[['wind_u_10m', 'wind_v_10m']].interp(time=new_times)
+
+    u10 = ds_interp['wind_u_10m']
+    v10 = ds_interp['wind_v_10m']
     tws = np.hypot(v10, u10)
     tws = tws * 1.94384  # convert m/s to knots
     twd = (180 + np.rad2deg(np.arctan2(u10, v10))) % 360
@@ -151,7 +170,7 @@ def get_route(
     #            out_file.write(response.read())
 
     # Initialize Router
-    step_val = 3 if freq == "3hr" else 1
+    step_val = float(crank_step) / 60.0
     print('creating routing queue')
     progress_queue = queue.Queue()
 
