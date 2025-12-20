@@ -37,7 +37,9 @@ def get_route(
     init_time: int = -1,
     lead_time_start: int = 0,
     freq: str = "1hr",
-    crank_step: int = 10,
+    crank_step: int = 30,
+    avoid_land_crossings: bool = True,
+    leg_check_spacing_nm: float = 1.0,
     polar_file: str = "volvo70"
 ):
     from fastapi import Response
@@ -56,6 +58,9 @@ def get_route(
 
     if crank_step <= 0:
         return Response(content="crank_step must be a positive integer (minutes)", status_code=400)
+
+    if leg_check_spacing_nm < 0.25:
+        return Response(content="leg_check_spacing_nm must be >= 0.25 (nautical miles)", status_code=400)
 
     start_point = (start_lat, start_lon)
     end_point = (end_lat, end_lon)
@@ -199,6 +204,8 @@ def get_route(
         end_point=end_point,
         point_validity_extent=[min_lat, min_lon, max_lat, max_lon],
         point_validity_file=ds_lsm,
+        avoid_land_crossings=avoid_land_crossings,
+        leg_check_spacing_nm=leg_check_spacing_nm,
         spread=130,
         wake_lim=30,
         rounding=2,

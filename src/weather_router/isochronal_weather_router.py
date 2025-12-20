@@ -25,7 +25,10 @@ class weather_router:
             finish_size=20,
             optimise_n_points=None,
             optimise_window=24,
-            progress_callback=None
+            progress_callback=None,
+            avoid_land_crossings: bool = False,
+            leg_check_spacing_nm: float = 1.0,
+            leg_check_max_samples: int = 25,
             ):
         """
         weather_router: class
@@ -59,6 +62,13 @@ class weather_router:
                 time step window size (±) for optimization constraint search (default: 24)
             :param progress_callback: function, optional
                 Callback function to report progress. Called with (step, dist_to_finish, isochrones).
+            :param avoid_land_crossings: bool
+                If True, reject any candidate leg that crosses land by sampling intermediate points.
+            :param leg_check_spacing_nm: float
+                Target sampling spacing (nautical miles) along each candidate leg.
+                Must be >= 0.25nm.
+            :param leg_check_max_samples: int
+                Maximum number of intermediate samples per candidate leg (performance cap).
         """
 
         self.end = False
@@ -79,6 +89,15 @@ class weather_router:
         self.optimise_window = optimise_window
         self.progress_callback = progress_callback
 
+        if leg_check_spacing_nm < 0.25:
+            raise ValueError("leg_check_spacing_nm must be >= 0.25 (nautical miles)")
+        if leg_check_max_samples < 1:
+            raise ValueError("leg_check_max_samples must be >= 1")
+
+        self.avoid_land_crossings = avoid_land_crossings
+        self.leg_check_spacing_nm = float(leg_check_spacing_nm)
+        self.leg_check_max_samples = int(leg_check_max_samples)
+
 
         from . import point_validity
         land_sea_mask = point_validity.land_sea_mask
@@ -87,6 +106,48 @@ class weather_router:
         else:
             lsm = land_sea_mask(file=point_validity_file, method = point_validity_method)
         self.point_validity = lsm.point_validity
+
+    def leg_is_clear(self, lat0, lon0, heading, distance_nm):
+        """
+        Return True if the great-circle leg stays on water.
+
+        We check intermediate points along the same initial bearing used to compute the endpoint.
+        Endpoint validity should be checked separately by the caller.
+        """
+        if not self.avoid_land_crossings:
+            return True
+
+        if distance_nm is None:
+            return False
+
+        try:
+            distance_nm = float(distance_nm)
+        except Exception:
+            return False
+
+        if distance_nm <= 0:
+            return True
+
+        spacing = self.leg_check_spacing_nm
+
+        # Always check at least the midpoint for short legs (distance < spacing),
+        # otherwise sample at approximately `spacing` nm intervals.
+        if distance_nm <= spacing:
+            sample_distances = [distance_nm * 0.5]
+        else:
+            n_intervals = int(math.ceil(distance_nm / spacing))
+            # interior sample points are 1..n_intervals-1
+            n_interior = max(1, n_intervals - 1)
+            if n_interior > self.leg_check_max_samples:
+                # Reduce samples while keeping a roughly uniform spacing
+                n_intervals = self.leg_check_max_samples + 1
+            sample_distances = [(distance_nm * i / n_intervals) for i in range(1, n_intervals)]
+
+        for d in sample_distances:
+            p = geopy.distance.great_circle(nautical=d).destination((lat0, lon0), heading)
+            if not self.point_validity(p.latitude, p.longitude):
+                return False
+        return True
 
     def get_min_dist_wp(self, isochrones):
         dists = []
@@ -266,7 +327,8 @@ class weather_router:
             lat, lon = end_point.latitude, end_point.longitude
             route = route[:-1]
             route.append((lat, lon))
-            if self.point_validity(lat, lon):
+            leg_distance_nm = speed * self.step
+            if self.point_validity(lat, lon) and self.leg_is_clear(lat_init, lon_init, heading, leg_distance_nm):
                 bearing_end = self.getBearing((lat, lon), self.end_point)
                 # Store current TWA with the possible position for next iteration
                 possible.append([lat, lon, route, bearing_end, twa])
@@ -493,7 +555,9 @@ class weather_router:
             route.append((lat, lon))
             
             # Check point validity and optimization region constraints
-            if (self.point_validity(lat, lon) and 
+            leg_distance_nm = speed * self.step
+            if (self.point_validity(lat, lon) and
+                self.leg_is_clear(lat_init, lon_init, heading, leg_distance_nm) and
                 self.is_within_optimization_region(lat, lon, time_step_idx, route_points, spacings)):
                 bearing_end = self.getBearing((lat, lon), self.end_point)
                 possible.append([lat, lon, route, bearing_end, twa])
