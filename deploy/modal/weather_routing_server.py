@@ -7,7 +7,7 @@ image = (
     modal.Image.debian_slim()
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20251219_9"}) 
+    .env({"FORCE_BUILD": "20251220_1"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -39,7 +39,7 @@ def get_route(
     freq: str = "1hr",
     crank_step: int = 30,
     avoid_land_crossings: bool = True,
-    leg_check_spacing_nm: float = 1.0,
+    leg_check_spacing_nm: float = 2.0,
     polar_file: str = "volvo70"
 ):
     from fastapi import Response
@@ -83,8 +83,12 @@ def get_route(
     ds = ds.isel(init_time=init_time)
     
     if freq == "1hr":
+        crank_step = 60
+        leg_check_spacing_nm = 3
         ds = ds.isel(lead_time=slice(lead_time_start, 120))
     elif freq == "3hr":
+        leg_check_spacing_nm = 9
+        crank_step = 180
         # Construct indices for 3-hourly sequence
         # Hourly part: 0 to 120 (inclusive) every 3 hours
         hourly_indices = list(range(0, 121, 3))
@@ -146,7 +150,7 @@ def get_route(
 
     # Load Polar
     print('fetching polar')
-    url = f"https://peterm790.s3.af-south-1.amazonaws.com/polars/{polar_file}.pol"
+    url = f"https://data.offshoreweatherrouting.com/polars/{polar_file}.pol"
     with urllib.request.urlopen(url) as response:
         polar_data = response.read().decode('utf-8')
 
@@ -154,9 +158,9 @@ def get_route(
 
     # Download land-sea mask
     print('loading lsm zarr')
-    ds_lsm = xr.open_dataset('s3://peterm790/GEBCO_2025_land_mask_sharded.zarr/',
-                                engine = 'zarr',
-                                storage_options={"anon": True})
+    ds_lsm = xr.open_zarr('https://data.offshoreweatherrouting.com/GEBCO_2025_land_mask_sharded.zarr',
+                                consolidated=True)
+                                #storage_options={"anon": True})
     ds_lsm = ds_lsm.rename({'lat':'latitude', 'lon':'longitude'})
     ds_lsm = ds_lsm.sortby('latitude', ascending = False)
     ds_lsm = ds_lsm.fillna(0)
@@ -206,15 +210,28 @@ def get_route(
         point_validity_file=ds_lsm,
         avoid_land_crossings=avoid_land_crossings,
         leg_check_spacing_nm=leg_check_spacing_nm,
-        spread=130,
-        wake_lim=30,
+        spread=270,
+        wake_lim=15,
         rounding=2,
         n_points=30,
-        progress_callback=progress_callback
+        progress_callback=progress_callback,
+        finish_size=5
     )
 
     # Run Routing
     def generate():
+        # Chrome (and some intermediaries) can buffer small chunks.
+        # We pad each NDJSON line to a minimum size to encourage progressive delivery.
+        MIN_CHUNK_BYTES = 16 * 1024
+
+        def ndjson_line_chunk(obj) -> str:
+            payload = json.dumps(obj)  # keep existing JSON formatting
+            payload_bytes = len(payload.encode("utf-8"))
+            # Pad BEFORE newline so each yielded chunk is exactly one NDJSON line.
+            if payload_bytes < (MIN_CHUNK_BYTES - 1):
+                payload += " " * ((MIN_CHUNK_BYTES - 1) - payload_bytes)
+            return payload + "\n"
+
         # Start routing in a separate thread
         routing_thread = threading.Thread(target=weatherrouter.route)
         routing_thread.start()
@@ -224,11 +241,7 @@ def get_route(
             try:
                 # Wait for progress or timeout
                 progress = progress_queue.get(timeout=0.1)
-                # Pad chunk to exceed 1024 bytes to avoid buffering
-                chunk = json.dumps(progress) + "\n"
-                if len(chunk.encode('utf-8')) < 1024:
-                    chunk += " " * (1024 - len(chunk.encode('utf-8')))
-                yield chunk
+                yield ndjson_line_chunk(progress)
             except queue.Empty:
                 continue
         
@@ -238,11 +251,7 @@ def get_route(
         while not progress_queue.empty():
             try:
                 progress = progress_queue.get_nowait()
-                # Pad chunk to exceed 1024 bytes to avoid buffering
-                chunk = json.dumps(progress) + "\n"
-                if len(chunk.encode('utf-8')) < 1024:
-                    chunk += " " * (1024 - len(chunk.encode('utf-8')))
-                yield chunk
+                yield ndjson_line_chunk(progress)
             except queue.Empty:
                 break
 
@@ -257,13 +266,11 @@ def get_route(
                 initial_route_copy['time'] = initial_route_copy['time'].astype(str)
             initial_route_data = initial_route_copy.to_dict(orient="records")
         
-        chunk = json.dumps({
+        initial_msg = {
             "type": "initial",
             "data": initial_route_data
-        }) + "\n"
-        if len(chunk.encode('utf-8')) < 1024:
-            chunk += " " * (1024 - len(chunk.encode('utf-8')))
-        yield chunk
+        }
+        yield ndjson_line_chunk(initial_msg)
 
         initial_isochrones = weatherrouter.get_isochrones()
         
@@ -279,10 +286,7 @@ def get_route(
                 # Mark optimization progress differently if needed, or reuse 'progress' type
                 # Here we reuse 'progress' type, but you could add a 'stage': 'optimization' field if desired
                 # For now, we assume client handles step/dist same way
-                chunk = json.dumps(progress) + "\n"
-                if len(chunk.encode('utf-8')) < 1024:
-                    chunk += " " * (1024 - len(chunk.encode('utf-8')))
-                yield chunk
+                yield ndjson_line_chunk(progress)
             except queue.Empty:
                 continue
         
@@ -292,10 +296,7 @@ def get_route(
         while not progress_queue.empty():
             try:
                 progress = progress_queue.get_nowait()
-                chunk = json.dumps(progress) + "\n"
-                if len(chunk.encode('utf-8')) < 1024:
-                    chunk += " " * (1024 - len(chunk.encode('utf-8')))
-                yield chunk
+                yield ndjson_line_chunk(progress)
             except queue.Empty:
                 break
 
@@ -309,20 +310,19 @@ def get_route(
                 route_df['time'] = route_df['time'].astype(str)
             route_data = route_df.to_dict(orient="records")
             
-        chunk = json.dumps({
+        result_msg = {
             "type": "result", 
             "data": route_data
-        }) + "\n"
-        if len(chunk.encode('utf-8')) < 1024:
-            chunk += " " * (1024 - len(chunk.encode('utf-8')))
-        yield chunk
+        }
+        yield ndjson_line_chunk(result_msg)
 
     return StreamingResponse(
         generate(), 
-        media_type="application/x-ndjson",
+        media_type="application/x-ndjson; charset=utf-8",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
+            "X-Accel-Buffering": "no",
+            "X-Content-Type-Options": "nosniff",
         }
     )
