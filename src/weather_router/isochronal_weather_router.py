@@ -544,6 +544,27 @@ class weather_router:
         
         return possible
 
+    def get_possible_batch_optimized(self, lats, lons, routes, bearings_end, t, time_step_idx, route_points, spacings, previous_twas=None):
+        """
+        Batch wrapper around `get_possible_optimized`.
+
+        The routing logic in this module is pointwise (non-vectorized). This method exists so
+        `optimize()` can expand a whole frontier in one call.
+        """
+        if previous_twas is None:
+            previous_twas = [None] * len(lats)
+        if not (len(lats) == len(lons) == len(routes) == len(bearings_end) == len(previous_twas)):
+            raise ValueError("get_possible_batch_optimized(): input arrays/lists must all have the same length.")
+
+        possible_at_t = []
+        for lat_i, lon_i, route_i, brg_i, prev_twa_i in zip(lats, lons, routes, bearings_end, previous_twas):
+            possible_at_t.append(
+                self.get_possible_optimized(
+                    lat_i, lon_i, route_i, brg_i, t, time_step_idx, route_points, spacings, prev_twa_i
+                )
+            )
+        return sum(possible_at_t, [])
+
     def prune_close_together(self, possible):
         """
         Remove points that are very close together (same rounded lat/lon bucket),
@@ -622,7 +643,7 @@ class weather_router:
         if not self.point_validity(lat, lon):
             print('start point error')
             return None
-
+        
         # Initial State
         lats = np.array([lat])
         lons = np.array([lon])
@@ -667,7 +688,7 @@ class weather_router:
             if self.progress_callback:
                 self.progress_callback(step, dist_wp, possible)
             self.optimized_isochrones.append(possible)
-
+            
             if dist_wp <= self.finish_size:
                 break
 
