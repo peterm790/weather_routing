@@ -460,8 +460,16 @@ class weather_router:
             # Extract lat/lon coordinates 
             points = [(float(row[0]), float(row[1])) for row in isochrone]
             
-            # Sort points by longitude then latitude for consistent spacing calculation
-            sort_points = sorted(points, key=lambda k: [k[1], k[0]])
+            # Sort points by bearing from start point to ensure they are ordered along the wavefront
+            bearings = [self.getBearing(self.start_point, p) for p in points]
+            
+            # Handle wrap-around at 0/360 degrees if the sector spans across North
+            if bearings and (max(bearings) - min(bearings) > 180):
+                bearings = [b + 360 if b < 180 else b for b in bearings]
+            
+            # Sort points based on the calculated bearings
+            points_with_bearings = sorted(zip(points, bearings), key=lambda x: x[1])
+            sort_points = [p for p, _ in points_with_bearings]
             
             # Calculate cumulative distances using geographical distances
             total_distance = 0.0
@@ -675,10 +683,11 @@ class weather_router:
             possible, _ = self.prune_close_together(possible)
             
             if len(possible) > self.optimise_n_points:
+                print('pruning in optimise!')
                 original_n_points = self.n_points
                 self.n_points = self.optimise_n_points
                 possible, _ = self.prune_equidistant(possible)
-                self.n_points = original_n_points
+                self.n_points = original_n_points # a hack must fix
 
             if len(possible) == 0:
                 raise RuntimeError(f"Optimization pass produced no valid candidates at step {step}.")
