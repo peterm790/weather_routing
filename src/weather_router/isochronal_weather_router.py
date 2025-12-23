@@ -555,7 +555,7 @@ class weather_router:
                 closest_spacing = spacings[min(i, len(spacings) - 1)]
         
         # Use the closest spacing as constraint radius (in nautical miles)
-        constraint_radius = closest_spacing/2
+        constraint_radius = closest_spacing
         
         return min_distance_to_center <= constraint_radius
 
