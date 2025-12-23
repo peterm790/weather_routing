@@ -330,6 +330,10 @@ class weather_router:
             heading = ((int(heading) + 360) % 360)
             twa = self.getTWA_from_heading(heading, twd)
             speed = self.polar.getSpeed(tws, np.abs(twa))
+
+            # Apply tack penalty if tacking
+            if self.is_tacking(twa, previous_twa):
+                speed = speed * (1.0 - self.tack_penalty)
             
             end_point = geopy.distance.great_circle(
                 nautical=speed*self.step
