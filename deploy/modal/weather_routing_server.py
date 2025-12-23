@@ -7,7 +7,7 @@ image = (
     modal.Image.debian_slim()
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20251223_9999999"}) 
+    .env({"FORCE_BUILD": "20251223_inf"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -50,7 +50,9 @@ def get_route(
     optimise_n_points: int = 60,
     optimise_window: int = 24,
     leg_check_max_samples: int = 25,
-    point_validity_method: str = "nearest"
+    point_validity_method: str = "nearest",
+    twa_change_penalty: float = 0.02,
+    twa_change_threshold: float = 1.0
 ):
     from fastapi import Response
     from fastapi.responses import StreamingResponse
@@ -230,7 +232,9 @@ def get_route(
         tack_penalty=tack_penalty,
         optimise_window=optimise_window,
         leg_check_max_samples=leg_check_max_samples,
-        point_validity_method=point_validity_method
+        point_validity_method=point_validity_method,
+        twa_change_penalty=twa_change_penalty,
+        twa_change_threshold=twa_change_threshold
     )
 
     # Run Routing

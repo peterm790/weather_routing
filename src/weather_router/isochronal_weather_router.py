@@ -22,6 +22,8 @@ class weather_router:
             point_validity_file=None,
             point_validity_method = 'nearest',
             tack_penalty=0.5,
+            twa_change_penalty=0.02,
+            twa_change_threshold=5.0,
             finish_size=20,
             optimise_n_points=None,
             optimise_window=24,
@@ -54,6 +56,10 @@ class weather_router:
                 either nearest or arr, use arr if land sea mask is directly from weather data (mostly deprecated)
             :param tack_penalty: float
                 speed penalty (0.0-1.0) applied when tacking (TWA changes sides)
+            :param twa_change_penalty: float
+                speed penalty (0.0-1.0) applied when TWA changes more than threshold (default 0.02)
+            :param twa_change_threshold: float
+                threshold in degrees for applying TWA change penalty (default 5.0)
             :param finish_size: int
                 size of the finish area in nm
             :param optimise_n_points: int
@@ -84,6 +90,8 @@ class weather_router:
         self.rounding = rounding
         self.n_points = n_points
         self.tack_penalty = tack_penalty
+        self.twa_change_penalty = twa_change_penalty
+        self.twa_change_threshold = twa_change_threshold
         self.finish_size = finish_size
         self.optimise_n_points = optimise_n_points if optimise_n_points is not None else n_points * 2
         self.optimise_window = optimise_window
@@ -195,6 +203,23 @@ class weather_router:
         
         return previous_side != current_side
 
+    def is_twa_change(self, current_twa, previous_twa):
+        """
+        Determine if the TWA changed significantly (exceeds threshold), but not a tack.
+        """
+        if previous_twa is None:
+            return False
+        
+        # If tacking, let the tack penalty handle it
+        if self.is_tacking(current_twa, previous_twa):
+            return False
+
+        diff = abs(current_twa - previous_twa)
+        if diff > 180:
+            diff = 360 - diff
+            
+        return diff > self.twa_change_threshold
+
     def myround(self, x, base=1):
         return base * round(x/base)
 
@@ -234,7 +259,18 @@ class weather_router:
         return arr[keep]
 
     def return_equidistant(self, isochrone):
-        sort_iso = sorted(isochrone , key=lambda k: [k[1], k[0]])
+        # Sort points by bearing from start point to ensure they are ordered along the wavefront
+        points = isochrone
+        bearings = [self.getBearing(self.start_point, p) for p in points]
+        
+        # Handle wrap-around at 0/360 degrees if the sector spans across North
+        if bearings and (max(bearings) - min(bearings) > 180):
+                bearings = [b + 360 if b < 180 else b for b in bearings]
+        
+        # Sort points based on the calculated bearings
+        points_with_bearings = sorted(zip(points, bearings), key=lambda x: x[1])
+        sort_iso = [p for p, _ in points_with_bearings]
+
         y = [x[0] for x in sort_iso]
         x = [x[1] for x in sort_iso]
         xd = np.diff(x)
@@ -298,6 +334,8 @@ class weather_router:
             # Apply tack penalty if tacking
             if self.is_tacking(twa, previous_twa):
                 speed = speed * (1.0 - self.tack_penalty)
+            elif self.is_twa_change(twa, previous_twa):
+                speed = speed * (1.0 - self.twa_change_penalty)
             
             end_point = geopy.distance.great_circle(
                 nautical=speed*self.step
@@ -430,15 +468,22 @@ class weather_router:
             
             # Determine if each leg involves tacking
             df['is_tacking'] = False
+            df['is_twa_change'] = False
             df['boat_speed'] = df['base_boat_speed']
             
             for i in range(1, len(df)):
                 current_twa = df.iloc[i]['twa']
                 previous_twa = df.iloc[i-1]['twa']
                 is_tacking = self.is_tacking(current_twa, previous_twa)
+                is_twa_change = self.is_twa_change(current_twa, previous_twa)
+
                 df.iloc[i, df.columns.get_loc('is_tacking')] = is_tacking
+                df.iloc[i, df.columns.get_loc('is_twa_change')] = is_twa_change
+
                 if is_tacking:
                     df.iloc[i, df.columns.get_loc('boat_speed')] = df.iloc[i]['base_boat_speed'] * (1.0 - self.tack_penalty)
+                elif is_twa_change:
+                    df.iloc[i, df.columns.get_loc('boat_speed')] = df.iloc[i]['base_boat_speed'] * (1.0 - self.twa_change_penalty)
             
             df['hours_elapsed'] = list(df.index)
             df['hours_elapsed'] = df['hours_elapsed']*self.step
@@ -532,6 +577,8 @@ class weather_router:
             # Apply tack penalty if tacking
             if self.is_tacking(twa, previous_twa):
                 speed = speed * (1.0 - self.tack_penalty)
+            elif self.is_twa_change(twa, previous_twa):
+                speed = speed * (1.0 - self.twa_change_penalty)
             
             end_point = geopy.distance.great_circle(
                 nautical=speed*self.step
