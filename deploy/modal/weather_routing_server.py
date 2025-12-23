@@ -7,7 +7,7 @@ image = (
     modal.Image.debian_slim()
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20251223_99"}) 
+    .env({"FORCE_BUILD": "20251223_99999"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -220,29 +220,39 @@ def get_route(
 
     # Run Routing
     def generate():
-        # Chrome (and some intermediaries) can buffer small chunks.
-        # We pad each NDJSON line to a minimum size to encourage progressive delivery.
-        MIN_CHUNK_BYTES = 16 * 1024
+        """
+        Server-Sent Events (EventSource) stream compatible with `eventSource.onmessage`.
 
-        def ndjson_line_chunk(obj) -> str:
-            payload = json.dumps(obj)  # keep existing JSON formatting
-            payload_bytes = len(payload.encode("utf-8"))
-            # Pad BEFORE newline so each yielded chunk is exactly one NDJSON line.
-            if payload_bytes < (MIN_CHUNK_BYTES - 1):
-                payload += " " * ((MIN_CHUNK_BYTES - 1) - payload_bytes)
-            return payload + "\n"
+        We intentionally do NOT emit `event: ...` lines, because the client is using
+        `onmessage` (default "message" event) and expects:
+          data: <json>\n\n
+        """
+
+        def sse_data(data_obj) -> str:
+            # Emit a single-line JSON payload as one SSE "message" event.
+            # (Avoid multi-line JSON; EventSource concatenates multiple data lines with "\n".)
+            payload = json.dumps(data_obj, ensure_ascii=False, separators=(",", ":"))
+            return f"data: {payload}\n\n"
 
         # Start routing in a separate thread
         routing_thread = threading.Thread(target=weatherrouter.route)
         routing_thread.start()
         
         # Consume progress updates while routing is running
+        last_keepalive = time.monotonic()
+        KEEPALIVE_SECONDS = 15.0
         while routing_thread.is_alive():
             try:
                 # Wait for progress or timeout
                 progress = progress_queue.get(timeout=0.1)
-                yield ndjson_line_chunk(progress)
+                last_keepalive = time.monotonic()
+                yield sse_data(progress)
             except queue.Empty:
+                now = time.monotonic()
+                if now - last_keepalive >= KEEPALIVE_SECONDS:
+                    # SSE comment as keepalive (ignored by EventSource, but keeps proxies/LBs happy)
+                    last_keepalive = now
+                    yield ": keep-alive\n\n"
                 continue
         
         routing_thread.join()
@@ -251,7 +261,7 @@ def get_route(
         while not progress_queue.empty():
             try:
                 progress = progress_queue.get_nowait()
-                yield ndjson_line_chunk(progress)
+                yield sse_data(progress)
             except queue.Empty:
                 break
 
@@ -270,7 +280,7 @@ def get_route(
             "type": "initial",
             "data": initial_route_data
         }
-        yield ndjson_line_chunk(initial_msg)
+        yield sse_data(initial_msg)
 
         initial_isochrones = weatherrouter.get_isochrones()
         
@@ -279,6 +289,7 @@ def get_route(
         optimize_thread.start()
 
         # Consume progress updates while optimization is running
+        last_keepalive = time.monotonic()
         while optimize_thread.is_alive():
             try:
                 # Wait for progress or timeout
@@ -286,8 +297,13 @@ def get_route(
                 # Mark optimization progress differently if needed, or reuse 'progress' type
                 # Here we reuse 'progress' type, but you could add a 'stage': 'optimization' field if desired
                 # For now, we assume client handles step/dist same way
-                yield ndjson_line_chunk(progress)
+                last_keepalive = time.monotonic()
+                yield sse_data(progress)
             except queue.Empty:
+                now = time.monotonic()
+                if now - last_keepalive >= KEEPALIVE_SECONDS:
+                    last_keepalive = now
+                    yield ": keep-alive\n\n"
                 continue
         
         optimize_thread.join()
@@ -296,7 +312,7 @@ def get_route(
         while not progress_queue.empty():
             try:
                 progress = progress_queue.get_nowait()
-                yield ndjson_line_chunk(progress)
+                yield sse_data(progress)
             except queue.Empty:
                 break
 
@@ -314,11 +330,11 @@ def get_route(
             "type": "result", 
             "data": route_data
         }
-        yield ndjson_line_chunk(result_msg)
+        yield sse_data(result_msg)
 
     return StreamingResponse(
         generate(), 
-        media_type="application/x-ndjson; charset=utf-8",
+        media_type="text/event-stream; charset=utf-8",
         headers={
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",

@@ -546,42 +546,25 @@ class weather_router:
 
     def prune_close_together(self, possible):
         """
-        Remove points that are effectively the same location (within `self.rounding`),
-        keeping the best representative (closest to finish) per bucket, then cap to
-        `self.n_points`.
+        Remove points that are very close together (same rounded lat/lon bucket),
+        keeping the best (closest-to-finish) representative per bucket.
         """
         if len(possible) == 0:
             return np.array([], dtype=object), float("inf")
 
         arr = np.array(possible, dtype=object)
-        if arr.ndim != 2 or arr.shape[1] < 2:
-            raise ValueError("prune_close_together expected an array of rows with at least [lat, lon, ...]")
+        if arr.ndim != 2 or arr.shape[1] < 5:
+            raise ValueError("prune_close_together expected rows like [lat, lon, route, brg, twa].")
 
-        lats = arr[:, 0].astype(float)
-        lons = arr[:, 1].astype(float)
-        dists = self.haversine_vectorized(lats, lons, self.end_point[0], self.end_point[1]).astype(float)
+        df = pd.DataFrame(arr)
+        df['dist_wp'] = self.get_dist_wp(arr)
+        df = df.sort_values('dist_wp')
 
-        # Group by rounded lat/lon; within each bucket keep the point closest to finish.
-        df = pd.DataFrame(
-            {
-                "idx": np.arange(len(arr), dtype=int),
-                "dist": dists,
-                "round_lat": np.round(lats, self.rounding),
-                "round_lon": np.round(lons, self.rounding),
-            }
-        )
+        df['tups'] = df.apply(lambda x: (round(float(x[0]), self.rounding), round(float(x[1]), self.rounding)), axis=1)
+        df = df.drop_duplicates(subset=['tups'], keep='first')
 
-        df = df.sort_values("dist", ascending=True)
-        df = df.drop_duplicates(subset=["round_lat", "round_lon"], keep="first")
-
-        # Hard cap for performance control.
-        if len(df) > self.n_points:
-            df = df.head(self.n_points)
-
-        kept = df["idx"].to_numpy(dtype=int)
-        result_arr = arr[kept]
-        min_dist = float(df["dist"].min()) if len(df) else float("inf")
-        return result_arr, min_dist
+        dist_wp_min = float(df['dist_wp'].min()) if len(df) else float("inf")
+        return df.iloc[:, :5].to_numpy(dtype=object), dist_wp_min
 
 
     def optimize(self, previous_route, previous_isochrones):
@@ -600,11 +583,6 @@ class weather_router:
                 f"optimize() requires non-empty previous_route and previous_isochrones "
                 f"(got {len(previous_route)=}, {len(previous_isochrones)=})."
             )
-        if len(previous_route) != len(previous_isochrones):
-            raise ValueError(
-                "optimize() requires previous_route and previous_isochrones to have the same length "
-                f"(got {len(previous_route)} route points vs {len(previous_isochrones)} isochrones)."
-            )
         if len(self.time_steps) == 0:
             raise ValueError("optimize() requires non-empty self.time_steps.")
 
@@ -615,8 +593,28 @@ class weather_router:
         if spacings[0] < self.finish_size:
             spacings = [self.finish_size] * len(spacings)
         
-        # Extract route points for constraint centers
-        route_points = [(float(point[0]), float(point[1])) for point in previous_route]
+        # Extract route points for constraint centers.
+        # Common convention: routes include the start point, so they are often 1 longer than isochrones.
+        n_route = len(previous_route)
+        n_iso = len(previous_isochrones)
+        if n_route == n_iso + 1:
+            # Align: isochrone index 0 corresponds to "after the first move" => route[1]
+            aligned_route = previous_route[1:]
+        elif n_route == n_iso:
+            aligned_route = previous_route
+        else:
+            raise ValueError(
+                "optimize() requires len(previous_route) to be either equal to len(previous_isochrones) "
+                "or exactly one longer (to include the start point). "
+                f"Got {n_route} route points vs {n_iso} isochrones."
+            )
+
+        route_points = [(float(point[0]), float(point[1])) for point in aligned_route]
+        if len(route_points) != len(spacings):
+            raise ValueError(
+                "optimize() internal alignment error: expected route_points and spacings to be the same length "
+                f"(got {len(route_points)} route points vs {len(spacings)} spacings)."
+            )
 
         lat, lon = self.start_point
         self.optimized_isochrones = []
