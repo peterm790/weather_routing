@@ -203,6 +203,53 @@ class weather_router:
         
         return previous_side != current_side
 
+    def has_intersected_finish(self, lat_start, lon_start, lat_end, lon_end):
+        """
+        Check if the segment from start to end intersects the finish area.
+        Approximates using Cartesian coordinates on a flat earth projection.
+        """
+        finish_lat, finish_lon = self.end_point
+        radius_nm = self.finish_size
+        
+        # Approximate scale factor for longitude based on mean latitude
+        mean_lat = (lat_start + finish_lat) / 2.0
+        lon_scale = math.cos(math.radians(mean_lat))
+        
+        # Convert to local Cartesian coordinates (nm) relative to finish point
+        # 1 degree lat = 60 nm
+        y1 = (lat_start - finish_lat) * 60.0
+        x1 = (lon_start - finish_lon) * 60.0 * lon_scale
+        
+        y2 = (lat_end - finish_lat) * 60.0
+        x2 = (lon_end - finish_lon) * 60.0 * lon_scale
+        
+        # Vector from p1 to p2
+        dx = x2 - x1
+        dy = y2 - y1
+        
+        # Segment length squared
+        l2 = dx*dx + dy*dy
+        
+        if l2 == 0:
+            return x1*x1 + y1*y1 <= radius_nm*radius_nm
+            
+        # Project finish point (0,0) onto line containing segment
+        # The vector from p1 to (0,0) is (-x1, -y1)
+        # t = dot(p1_to_origin, p1_to_p2) / l2
+        t = ( -x1 * dx - y1 * dy ) / l2
+        
+        # Clamp t to segment [0, 1] to find closest point on segment
+        t_clamped = max(0, min(1, t))
+        
+        # Closest point coordinates
+        closest_x = x1 + t_clamped * dx
+        closest_y = y1 + t_clamped * dy
+        
+        # Distance squared to closest point
+        dist_sq = closest_x*closest_x + closest_y*closest_y
+        
+        return dist_sq <= radius_nm*radius_nm
+
     def is_twa_change(self, current_twa, previous_twa):
         """
         Determine if the TWA changed significantly (exceeds threshold), but not a tack.
@@ -323,6 +370,12 @@ class weather_router:
     def get_possible(self, lat_init, lon_init, route, bearing_end, t, previous_twa=None):
         possible = []
         twd, tws = self.get_wind(t, lat_init, lon_init)
+        
+        # Check if we are close enough to the finish to check for intersection
+        # This optimization avoids checking every leg when far away
+        dist_to_finish = geopy.distance.great_circle((lat_init, lon_init), self.end_point).nm
+        check_intersection = dist_to_finish < (self.finish_size * 4)
+
         upper = int(bearing_end) + self.spread
         lower = int(bearing_end) - self.spread
         route.append('dummy')
@@ -341,9 +394,22 @@ class weather_router:
                 (lat_init, lon_init), heading
                 )
             lat, lon = end_point.latitude, end_point.longitude
+
+            # Check if we crossed the finish
+            intersected = False
+            if check_intersection and self.has_intersected_finish(lat_init, lon_init, lat, lon):
+                lat, lon = self.end_point
+                intersected = True
+
             route = route[:-1]
             route.append((lat, lon))
-            leg_distance_nm = speed * self.step
+            
+            # Recalculate distance for leg check if we snapped, otherwise use theoretical distance
+            if intersected:
+                leg_distance_nm = geopy.distance.great_circle((lat_init, lon_init), (lat, lon)).nm
+            else:
+                leg_distance_nm = speed * self.step
+
             if self.point_validity(lat, lon) and self.leg_is_clear(lat_init, lon_init, heading, leg_distance_nm):
                 bearing_end = self.getBearing((lat, lon), self.end_point)
                 # Store current TWA with the possible position for next iteration
@@ -553,7 +619,7 @@ class weather_router:
                 closest_spacing = spacings[min(i, len(spacings) - 1)]
         
         # Use the closest spacing as constraint radius (in nautical miles)
-        constraint_radius = closest_spacing
+        constraint_radius = closest_spacing * 2
         
         return min_distance_to_center <= constraint_radius
 
@@ -563,11 +629,16 @@ class weather_router:
         """
         possible = []
         twd, tws = self.get_wind(t, lat_init, lon_init)
+        
+        # Check if we are close enough to the finish to check for intersection
+        dist_to_finish = geopy.distance.great_circle((lat_init, lon_init), self.end_point).nm
+        check_intersection = dist_to_finish < (self.finish_size * 4)
+
         upper = int(bearing_end) + self.spread
         lower = int(bearing_end) - self.spread
         route.append('dummy')
         
-        for heading in range(lower, upper, 10):
+        for heading in range(lower, upper, 2):
             heading = ((int(heading) + 360) % 360)
             twa = self.getTWA_from_heading(heading, twd)
             speed = self.polar.getSpeed(tws, np.abs(twa))
@@ -584,14 +655,25 @@ class weather_router:
                 (lat_init, lon_init), heading
                 )
             lat, lon = end_point.latitude, end_point.longitude
+
+            # Check if we crossed the finish
+            intersected = False
+            if check_intersection and self.has_intersected_finish(lat_init, lon_init, lat, lon):
+                lat, lon = self.end_point
+                intersected = True
+
             route = route[:-1]
             route.append((lat, lon))
             
             # Check point validity and optimization region constraints
-            leg_distance_nm = speed * self.step
+            if intersected:
+                leg_distance_nm = geopy.distance.great_circle((lat_init, lon_init), (lat, lon)).nm
+            else:
+                leg_distance_nm = speed * self.step
+
             if (self.point_validity(lat, lon) and
                 self.leg_is_clear(lat_init, lon_init, heading, leg_distance_nm) and
-                self.is_within_optimization_region(lat, lon, time_step_idx, route_points, spacings)):
+                (intersected or self.is_within_optimization_region(lat, lon, time_step_idx, route_points, spacings))):
                 bearing_end = self.getBearing((lat, lon), self.end_point)
                 possible.append([lat, lon, route, bearing_end, twa])
         

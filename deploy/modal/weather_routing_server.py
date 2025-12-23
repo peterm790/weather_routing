@@ -7,7 +7,7 @@ image = (
     modal.Image.debian_slim()
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20251223_inf5"}) 
+    .env({"FORCE_BUILD": "20251223_inf6"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -43,7 +43,7 @@ def get_route(
     polar_file: str = "volvo70",
     spread: int = 270,
     wake_lim: int = 15,
-    rounding: int = 2,
+    rounding: int = 3,
     n_points: int = 30,
     tack_penalty: float = 0.5,
     finish_size: float = 5.0,
