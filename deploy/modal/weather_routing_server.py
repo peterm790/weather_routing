@@ -7,7 +7,7 @@ image = (
     modal.Image.debian_slim()
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20251220_1"}) 
+    .env({"FORCE_BUILD": "20251223_99"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -23,7 +23,7 @@ image = (
 
 app = modal.App("weather-routing", image=image)
 
-@app.function(timeout=600)
+@app.function(timeout=1200)
 @modal.fastapi_endpoint()
 def get_route(
     start_lat: float, 

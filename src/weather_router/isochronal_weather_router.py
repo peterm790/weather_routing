@@ -1,8 +1,6 @@
 import numpy as np
 import pandas as pd
 import math
-import geopy
-import geopy.distance
 
 
 class weather_router:
@@ -57,7 +55,7 @@ class weather_router:
             :param finish_size: int
                 size of the finish area in nm
             :param optimise_n_points: int
-                number of points to maintain in each isochrone during optimization (defaults to n_points*2)
+                number of points to maintain in each isochrone during optimization (defaults to n_points*5)
             :param optimise_window: int
                 time step window size (±) for optimization constraint search (default: 24)
             :param progress_callback: function, optional
@@ -85,7 +83,7 @@ class weather_router:
         self.n_points = n_points
         self.tack_penalty = tack_penalty
         self.finish_size = finish_size
-        self.optimise_n_points = optimise_n_points if optimise_n_points is not None else n_points * 2
+        self.optimise_n_points = optimise_n_points if optimise_n_points is not None else n_points * 5
         self.optimise_window = optimise_window
         self.progress_callback = progress_callback
 
@@ -107,18 +105,51 @@ class weather_router:
             lsm = land_sea_mask(file=point_validity_file, method = point_validity_method)
         self.point_validity = lsm.point_validity
 
+    def haversine_vectorized(self, lat1, lon1, lat2, lon2):
+        R = 3440.065
+        phi1, phi2 = np.radians(lat1), np.radians(lat2)
+        dphi = np.radians(lat2 - lat1)
+        dlambda = np.radians(lon2 - lon1)
+        a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2)*np.sin(dlambda/2)**2
+        c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
+        return R * c
+
+    def destination_vectorized(self, lat1, lon1, dist, bearing):
+        R = 3440.065
+        lat1_rad = np.radians(lat1)
+        lon1_rad = np.radians(lon1)
+        bearing_rad = np.radians(bearing)
+        angular_dist = dist / R
+        
+        lat2_rad = np.arcsin(np.sin(lat1_rad) * np.cos(angular_dist) + 
+                             np.cos(lat1_rad) * np.sin(angular_dist) * np.cos(bearing_rad))
+        
+        lon2_rad = lon1_rad + np.arctan2(np.sin(bearing_rad) * np.sin(angular_dist) * np.cos(lat1_rad),
+                                         np.cos(angular_dist) - np.sin(lat1_rad) * np.sin(lat2_rad))
+        
+        return np.degrees(lat2_rad), np.degrees(lon2_rad)
+
+    def bearing_vectorized(self, lat1, lon1, lat2, lon2):
+        lat1_rad = np.radians(lat1)
+        lat2_rad = np.radians(lat2)
+        dlon_rad = np.radians(lon2 - lon1)
+        
+        y = np.sin(dlon_rad) * np.cos(lat2_rad)
+        x = np.cos(lat1_rad) * np.sin(lat2_rad) - \
+            np.sin(lat1_rad) * np.cos(lat2_rad) * np.cos(dlon_rad)
+        
+        bearing_rad = np.arctan2(y, x)
+        return (np.degrees(bearing_rad) + 360) % 360
+
     def leg_is_clear(self, lat0, lon0, heading, distance_nm):
         """
         Return True if the great-circle leg stays on water.
-
-        We check intermediate points along the same initial bearing used to compute the endpoint.
-        Endpoint validity should be checked separately by the caller.
         """
         if not self.avoid_land_crossings:
             return True
 
-        if distance_nm is None:
-            return False
+        if distance_nm is None or distance_nm <= 0:
+            return True
 
         try:
             distance_nm = float(distance_nm)
@@ -130,51 +161,48 @@ class weather_router:
 
         spacing = self.leg_check_spacing_nm
 
-        # Always check at least the midpoint for short legs (distance < spacing),
-        # otherwise sample at approximately `spacing` nm intervals.
         if distance_nm <= spacing:
             sample_distances = [distance_nm * 0.5]
         else:
             n_intervals = int(math.ceil(distance_nm / spacing))
-            # interior sample points are 1..n_intervals-1
             n_interior = max(1, n_intervals - 1)
             if n_interior > self.leg_check_max_samples:
-                # Reduce samples while keeping a roughly uniform spacing
                 n_intervals = self.leg_check_max_samples + 1
             sample_distances = [(distance_nm * i / n_intervals) for i in range(1, n_intervals)]
 
-        for d in sample_distances:
-            p = geopy.distance.great_circle(nautical=d).destination((lat0, lon0), heading)
-            if not self.point_validity(p.latitude, p.longitude):
+        # Vectorized check for sample points
+        # lat0, lon0 are scalars here (single leg check)
+        if len(sample_distances) > 0:
+            d = np.array(sample_distances)
+            lats, lons = self.destination_vectorized(lat0, lon0, d, heading)
+            
+            # Check validity of all points
+            # point_validity is vectorized
+            valid = self.point_validity(lats, lons)
+            if not np.all(valid):
                 return False
+                
         return True
 
     def get_min_dist_wp(self, isochrones):
-        dists = []
-        for lat, lon in isochrones[:, :2]:
-            dists.append(
-                geopy.distance.great_circle((lat, lon), self.end_point).nm
-                )
-        return min(dists)
+        if len(isochrones) == 0:
+             return 0
+        lats = isochrones[:, 0].astype(float)
+        lons = isochrones[:, 1].astype(float)
+        dists = self.haversine_vectorized(lats, lons, self.end_point[0], self.end_point[1])
+        return np.min(dists)
 
     def get_dist_wp(self, isochrones):
-        dists = []
-        for lat, lon in isochrones[:, :2]:
-            dists.append(
-                geopy.distance.great_circle((lat, lon), self.end_point).nm
-                )
+        if len(isochrones) == 0:
+             return []
+        lats = isochrones[:, 0].astype(float)
+        lons = isochrones[:, 1].astype(float)
+        dists = self.haversine_vectorized(lats, lons, self.end_point[0], self.end_point[1])
         return dists
 
     def getBearing(self, pointA, pointB):
-        lat1 = math.radians(pointA[0])
-        lat2 = math.radians(pointB[0])
-        diffLong = math.radians(pointB[1] - pointA[1])
-        x = math.sin(diffLong) * math.cos(lat2)
-        y = math.cos(lat1) * math.sin(lat2) - (
-            math.sin(lat1) * math.cos(lat2) * math.cos(diffLong)
-            )
-        initial_bearing = math.atan2(x, y)
-        return (math.degrees(initial_bearing) + 360) % 360
+        # Kept for compatibility, but updated to use numpy
+        return self.bearing_vectorized(pointA[0], pointA[1], pointB[0], pointB[1])
 
     def getTWA_from_heading(self, bearing, TWD):
         TWA = bearing - TWD
@@ -205,43 +233,89 @@ class weather_router:
         return (upper, lower)
 
     def is_not_in_wake(self, wake_lims, bearing):
-        in_wake = False
+        """
+        NOTE: Legacy naming — returns True if `bearing` is inside the wake sector.
+        Supports scalar or vectorized `bearing`.
+        """
         upper, lower = wake_lims
-        if upper > lower:
-            if bearing <= upper:
-                if bearing >= lower:
-                    in_wake = True
-        else:
-            if bearing >= lower:
-                in_wake = True
-            if bearing <= upper:
-                in_wake = True
-        return in_wake
+
+        # Scalar case
+        if np.ndim(upper) == 0:
+            if upper > lower:
+                return (bearing <= upper) and (bearing >= lower)
+            return (bearing >= lower) or (bearing <= upper)
+
+        # Vectorized case
+        mask_normal = upper > lower
+        res = np.zeros_like(bearing, dtype=bool)
+
+        res[mask_normal] = (bearing[mask_normal] <= upper[mask_normal]) & (bearing[mask_normal] >= lower[mask_normal])
+        mask_wrapped = ~mask_normal
+        res[mask_wrapped] = (bearing[mask_wrapped] >= lower[mask_wrapped]) | (bearing[mask_wrapped] <= upper[mask_wrapped])
+        return res
 
     def prune_slow(self, arr):
-        keep = [True] * len(arr)
+        # Vectorized prune slow
+        if len(arr) == 0:
+            return arr
+            
+        lats = arr[:, 0].astype(float)
+        lons = arr[:, 1].astype(float)
+        bearings_to_finish = arr[:, 3].astype(float)
+        
+        # Calculate pairwise bearings matrix
+        # bearings[i, j] is bearing FROM i TO j
+        # shape (N, N)
+        bearings_matrix = self.bearing_vectorized(lats[:, None], lons[:, None], lats[None, :], lons[None, :])
+        
+        # Calculate wake limits for each point
+        uppers, lowers = self.get_wake_lims(bearings_to_finish)
+        
+        keep = np.ones(len(arr), dtype=bool)
+        
+        # We can iterate, but use vectorized checks inside
+        # Or better: strictly sort by distance to finish (optional but good heuristic)
+        # Assuming arr is not sorted, we just check pairwise.
+        
+        # Since 'is_not_in_wake' returns True if IN wake (bad naming), 
+        # check if j is in wake of i.
+        # Check: is_not_in_wake((uppers[i], lowers[i]), bearings_matrix[i, j])
+        
         for i in range(len(arr)):
-            if keep[i] is True:
-                wake = self.get_wake_lims(arr[i][3])
-                for j in range(len(arr)):
-                    if not i == j:
-                        if keep[j] is True:
-                            bearing = self.getBearing(
-                                (arr[i][0], arr[i][1]), (arr[j][0], arr[j][1])
-                                )  # inputting lat,lon of array i and j
-                            if self.is_not_in_wake(wake, bearing):
-                                keep[j] = False
+            if keep[i]:
+                # Check which j are in wake of i
+                # Vectorized check against all j
+                in_wake_mask = self.is_not_in_wake((uppers[i], lowers[i]), bearings_matrix[i, :])
+                
+                # Don't prune self
+                in_wake_mask[i] = False
+                
+                # Prune those in wake
+                keep[in_wake_mask] = False
+                
         return arr[keep]
 
     def return_equidistant(self, isochrone):
-        sort_iso = sorted(isochrone , key=lambda k: [k[1], k[0]])
-        y = [x[0] for x in sort_iso]
-        x = [x[1] for x in sort_iso]
+        # Use numpy operations
+        # isochrone is list of [lat, lon, ...]
+        pts = np.array([(row[0], row[1]) for row in isochrone], dtype=float)
+        # Sort by lon, lat
+        # lexicon sort
+        ind = np.lexsort((pts[:,0], pts[:,1])) # sort by lat then lon? original key: [k[1], k[0]] -> lon, lat
+        pts = pts[ind]
+        
+        y = pts[:, 0]
+        x = pts[:, 1]
+        
         xd = np.diff(x)
         yd = np.diff(y)
         dist = np.sqrt(xd**2+yd**2)
         u = np.cumsum(dist)
         u = np.hstack([[0],u])
+        
+        if u.max() == 0:
+             return pts
+             
         t = np.linspace(0,u.max(),self.n_points)
         xn = np.interp(t, u, x)
         yn = np.interp(t, u, y)
@@ -250,140 +324,277 @@ class weather_router:
     def prune_equidistant(self, possible):
         """
         Prune points using equidistant spacing approach.
-        Returns the original points closest to equidistant points along the isochrone curve.
         """
+        if len(possible) == 0:
+            return possible, 0
+            
         arr = np.array(possible, dtype=object)
-        df = pd.DataFrame(arr)
-        df['dist_wp'] = self.get_dist_wp(arr)
+        # Vectorized dist calc
+        lats = arr[:, 0].astype(float)
+        lons = arr[:, 1].astype(float)
+        dists = self.haversine_vectorized(lats, lons, self.end_point[0], self.end_point[1])
         
         # Get equidistant points along the curve
         isochrone_points = [(row[0], row[1]) for row in possible]
         equidistant_points = self.return_equidistant(isochrone_points)
         
         # Find closest original points to each equidistant point
-        selected_indices = []
-        for eq_point in equidistant_points:
-            min_dist = float('inf')
-            closest_idx = 0
-            for i, row in enumerate(possible):
-                lat, lon = row[0], row[1]
-                # Calculate distance between original point and equidistant point
-                dist = np.sqrt((lat - eq_point[0])**2 + (lon - eq_point[1])**2)
-                if dist < min_dist:
-                    min_dist = dist
-                    closest_idx = i
-            if closest_idx not in selected_indices:
-                selected_indices.append(closest_idx)
+        # Vectorized distance matrix calculation
+        eq_lats = equidistant_points[:, 0]
+        eq_lons = equidistant_points[:, 1]
         
-        # Return selected points and minimum distance to waypoint
-        selected_points = [possible[i] for i in selected_indices]
-        selected_arr = np.array(selected_points, dtype=object)
-        selected_df = pd.DataFrame(selected_arr)
-        selected_df['dist_wp'] = self.get_dist_wp(selected_arr)
-        dist_wp_min = selected_df['dist_wp'].min()
+        # Distance matrix (M equidistant x N original)
+        # Use simple Euclidean on lat/lon as approx or haversine
+        # The original code used sqrt((lat-lat)**2...) -> Euclidean degrees
+        diff_lat = lats[None, :] - eq_lats[:, None]
+        diff_lon = lons[None, :] - eq_lons[:, None]
+        dist_matrix = np.sqrt(diff_lat**2 + diff_lon**2)
         
-        return selected_arr, dist_wp_min
+        closest_indices = np.argmin(dist_matrix, axis=1)
+        unique_indices = np.unique(closest_indices)
+        
+        selected_arr = arr[unique_indices]
+        
+        # Recalculate min dist
+        min_dist = np.min(dists[unique_indices])
+        
+        return selected_arr, min_dist
 
     def prune_close_together(self, possible):
+        """
+        Remove points that are effectively the same location (within `self.rounding`),
+        keeping the best representative (closest to finish) per bucket, then cap to
+        `self.n_points`.
+        """
+        if len(possible) == 0:
+            return np.array([], dtype=object), float("inf")
+
         arr = np.array(possible, dtype=object)
-        df = pd.DataFrame(arr)
-        df['dist_wp'] = self.get_dist_wp(arr)
-        df = df.sort_values('dist_wp')
-        df['round_lat'] = df.iloc[:, 0].apply(
-            pd.to_numeric
-            ).round(
-            self.rounding
-            )
-        df['round_lon'] = df.iloc[:, 1].apply(
-            pd.to_numeric
-            ).round(
-            self.rounding
-            )
-        df['tups'] = df[['round_lat', 'round_lon']].apply(tuple, axis=1)
-        df = df.drop_duplicates(subset=['tups'])
-        dit_wp_min = df['dist_wp'].min()
-        return df.iloc[:, :5].to_numpy(), dit_wp_min
+        if arr.ndim != 2 or arr.shape[1] < 2:
+            raise ValueError("prune_close_together expected an array of rows with at least [lat, lon, ...]")
+
+        lats = arr[:, 0].astype(float)
+        lons = arr[:, 1].astype(float)
+        dists = self.haversine_vectorized(lats, lons, self.end_point[0], self.end_point[1]).astype(float)
+
+        # Group by rounded lat/lon; within each bucket keep the point closest to finish.
+        df = pd.DataFrame(
+            {
+                "idx": np.arange(len(arr), dtype=int),
+                "dist": dists,
+                "round_lat": np.round(lats, self.rounding),
+                "round_lon": np.round(lons, self.rounding),
+            }
+        )
+
+        df = df.sort_values("dist", ascending=True)
+        df = df.drop_duplicates(subset=["round_lat", "round_lon"], keep="first")
+
+        # Hard cap for performance control.
+        if len(df) > self.n_points:
+            df = df.head(self.n_points)
+
+        kept = df["idx"].to_numpy(dtype=int)
+        result_arr = arr[kept]
+        min_dist = float(df["dist"].min()) if len(df) else float("inf")
+        return result_arr, min_dist
+
+    def get_possible_batch(self, lats, lons, routes, bearings_end, t, previous_twas=None):
+        N = len(lats)
+        
+        # Vectorized wind
+        twd, tws = self.get_wind(t, lats, lons)
+        
+        # Ensure correct shapes for broadcasting
+        twd = np.asarray(twd)
+        tws = np.asarray(tws)
+        
+        if twd.ndim == 0:
+            # Scalar case (single point)
+            twd = np.broadcast_to(twd, (N,))
+            tws = np.broadcast_to(tws, (N,))
+        elif twd.shape != (N,):
+             # Ensure 1D array of correct length
+             twd = twd.flatten() if twd.size == N else np.broadcast_to(twd, (N,))
+             tws = tws.flatten() if tws.size == N else np.broadcast_to(tws, (N,))
+        
+        # Headings grid
+        heading_offsets = np.arange(-self.spread, self.spread + 1, 10) 
+        M = len(heading_offsets)
+        
+        # headings (N, M)
+        headings = bearings_end[:, None] + heading_offsets[None, :]
+        headings = (headings + 360) % 360
+        
+        # TWD, TWS (N, M)
+        twd_exp = twd[:, None]
+        tws_exp = tws[:, None]
+        
+        # TWA
+        twa = self.getTWA_from_heading(headings, twd_exp)
+        
+        # Speed
+        speed = self.polar.getSpeed(tws_exp, np.abs(twa))
+        
+        # Tack Penalty
+        if previous_twas is not None:
+            prev_twa_exp = previous_twas[:, None]
+            tacking = self.is_tacking(twa, prev_twa_exp)
+            speed = np.where(tacking, speed * (1.0 - self.tack_penalty), speed)
+        
+        # Destination
+        dist = speed * self.step
+        new_lats, new_lons = self.destination_vectorized(lats[:, None], lons[:, None], dist, headings)
+        
+        # Flatten
+        flat_lats = new_lats.ravel()
+        flat_lons = new_lons.ravel()
+        flat_headings = headings.ravel()
+        flat_twa = twa.ravel()
+        flat_bearing_end = np.zeros_like(flat_lats) # Computed later if valid
+        
+        # Validity Check
+        valid_mask = self.point_validity(flat_lats, flat_lons)
+        
+        # Optimization Region (if provided - handled by caller logic? No, get_possible_optimized calls this?)
+        # Current get_possible does not handle optimization region. 
+        # get_possible_optimized does.
+        # I should unify or keep separate.
+        # For now, this replaces `get_possible`.
+        
+        valid_indices = np.where(valid_mask)[0]
+        
+        # Leg Clear Check
+        if self.avoid_land_crossings and len(valid_indices) > 0:
+            # Check subset
+            # Reconstruct parent index
+            # idx = p * M + m
+            # lat0 = lats[p]
+            
+            p_indices = valid_indices // M
+            
+            # Vectorized leg check is harder to do in one massive call if sample counts vary.
+            # But we can loop over valid candidates or do a batched check.
+            # Given reduced set, a loop might be acceptable or a semi-vectorized approach.
+            
+            final_valid_indices = []
+            for idx in valid_indices:
+                 p = idx // M
+                 if self.leg_is_clear(lats[p], lons[p], flat_headings[idx], dist.ravel()[idx]):
+                     final_valid_indices.append(idx)
+            valid_indices = np.array(final_valid_indices, dtype=int)
+            
+        # Construct Result
+        if len(valid_indices) == 0:
+            return []
+            
+        p_indices = valid_indices // M
+        
+        res_lats = flat_lats[valid_indices]
+        res_lons = flat_lons[valid_indices]
+        res_twa = flat_twa[valid_indices]
+        
+        # Calculate new bearings to end
+        # Vectorized bearing
+        res_bearings_end = self.bearing_vectorized(res_lats, res_lons, self.end_point[0], self.end_point[1])
+        
+        # Construct routes
+        # This is the slow part (list copying).
+        # Only do for survivors.
+        new_routes = []
+        for i, p in enumerate(p_indices):
+            # Shallow copy parent route and append new point
+            r = routes[p] + [(res_lats[i], res_lons[i])]
+            new_routes.append(r)
+            
+        # Format: [lat, lon, route, bearing_end, twa]
+        # Return list of lists
+        results = []
+        for i in range(len(res_lats)):
+             results.append([res_lats[i], res_lons[i], new_routes[i], res_bearings_end[i], res_twa[i]])
+             
+        return results
 
     def get_possible(self, lat_init, lon_init, route, bearing_end, t, previous_twa=None):
-        possible = []
-        twd, tws = self.get_wind(t, lat_init, lon_init)
-        upper = int(bearing_end) + self.spread
-        lower = int(bearing_end) - self.spread
-        route.append('dummy')
-        for heading in range(lower, upper, 10):
-            heading = ((int(heading) + 360) % 360)
-            twa = self.getTWA_from_heading(heading, twd)
-            speed = self.polar.getSpeed(tws, np.abs(twa))
-            
-            # Apply tack penalty if tacking
-            if self.is_tacking(twa, previous_twa):
-                speed = speed * (1.0 - self.tack_penalty)
-            
-            end_point = geopy.distance.great_circle(
-                nautical=speed*self.step
-                ).destination(
-                (lat_init, lon_init), heading
-                )
-            lat, lon = end_point.latitude, end_point.longitude
-            route = route[:-1]
-            route.append((lat, lon))
-            leg_distance_nm = speed * self.step
-            if self.point_validity(lat, lon) and self.leg_is_clear(lat_init, lon_init, heading, leg_distance_nm):
-                bearing_end = self.getBearing((lat, lon), self.end_point)
-                # Store current TWA with the possible position for next iteration
-                possible.append([lat, lon, route, bearing_end, twa])
-        return possible
+        # Compatibility wrapper or deprecated?
+        # The loop in `route` uses this. I will replace the loop in `route`.
+        # But `get_possible` might be called externally?
+        # I'll update it to use the batch logic for single point.
+        lats = np.array([lat_init])
+        lons = np.array([lon_init])
+        routes = [route]
+        bearings = np.array([bearing_end])
+        prev_twas = np.array([previous_twa]) if previous_twa is not None else None
+        
+        return self.get_possible_batch(lats, lons, routes, bearings, t, prev_twas)
 
     def route(self):
+        """
+        Run the main isochronal routing pass.
+
+        Uses vectorized candidate generation via `get_possible_batch()` and pruning via
+        `prune_slow()` + `prune_equidistant()`.
+        """
         lat, lon = self.start_point
         self.isochrones = []
+
         if not self.point_validity(lat, lon):
             print('start point error')
-        else:
-            step = 0
-            not_done = True
-            while not_done:
-                possible_at_t = None
-                possible = None
-                for step, t in enumerate(self.time_steps):
-                    #print(step)
-                    if step == 0:
-                        bearing_end = self.getBearing(
-                                                    (lat, lon),
-                                                    self.end_point
-                                                    )
-                        possible = self.get_possible(
-                                                    lat, lon,
-                                                    [self.start_point],
-                                                    bearing_end,
-                                                    t
-                                                    )
-                    else:
-                        possible = self.prune_slow(np.array(possible, dtype=object))
-                        possible, dist_wp = self.prune_equidistant(possible)
-                        print('step', step, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
-                        if self.progress_callback:
-                            self.progress_callback(step, dist_wp, possible)
-                        self.isochrones.append(possible)
-                        if dist_wp > self.finish_size:
-                            if step == len(self.time_steps)-1:
-                                print('out of time')
-                                not_done = False
-                                break
-                            else:
-                                possible_at_t = []
-                                for x in list(self.isochrones[-1]):
-                                    lat, lon, route, bearing_end, previous_twa = x
-                                    possible_at_t.append(
-                                        self.get_possible(
-                                            lat, lon, route, bearing_end, t, previous_twa)
-                                        )
-                        else:
-                            print('reached dest')
-                            not_done = False
-                            break
-                        if possible_at_t:
-                            possible = sum(possible_at_t, [])
+            return
+
+        # Current frontier (isochrone) state
+        current_lats = np.array([lat], dtype=float)
+        current_lons = np.array([lon], dtype=float)
+        current_routes = [[self.start_point]]
+        current_bearings = np.array([self.getBearing((lat, lon), self.end_point)], dtype=float)
+        current_twas = None  # no previous TWA for the first expansion
+
+        for step, t in enumerate(self.time_steps):
+            possible = self.get_possible_batch(
+                current_lats,
+                current_lons,
+                current_routes,
+                current_bearings,
+                t,
+                current_twas,
+            )
+
+            if step > 0:
+                possible = self.prune_slow(np.array(possible, dtype=object))
+                possible, dist_wp = self.prune_equidistant(possible)
+            else:
+                dist_wp = (
+                    self.get_min_dist_wp(np.array(possible, dtype=object))
+                    if len(possible) > 0
+                    else float('inf')
+                )
+
+            print('step', step, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
+            if self.progress_callback:
+                self.progress_callback(step, dist_wp, possible)
+
+            self.isochrones.append(possible)
+
+            if len(possible) == 0:
+                print('No valid routes found')
+                return
+
+            if dist_wp <= self.finish_size:
+                print('reached dest')
+                return
+
+            if step == len(self.time_steps) - 1:
+                print('out of time')
+                return
+
+            # Prepare next frontier
+            arr = np.array(possible, dtype=object)
+            current_lats = arr[:, 0].astype(float)
+            current_lons = arr[:, 1].astype(float)
+            current_routes = list(arr[:, 2])
+            current_bearings = arr[:, 3].astype(float)
+            current_twas = arr[:, 4].astype(float)
+
 
     def get_isochrones(self):
         return self.isochrones
@@ -486,7 +697,11 @@ class weather_router:
             # Calculate cumulative distances using geographical distances
             total_distance = 0.0
             for i in range(len(sort_points) - 1):
-                dist_nm = geopy.distance.great_circle(sort_points[i], sort_points[i+1]).nm
+                # Use vectorized haversine (scalar here)
+                dist_nm = self.haversine_vectorized(
+                    sort_points[i][0], sort_points[i][1], 
+                    sort_points[i+1][0], sort_points[i+1][1]
+                )
                 total_distance += dist_nm
             
             # Average spacing between points in nautical miles
@@ -515,8 +730,8 @@ class weather_router:
         
         for i in range(start_idx, end_idx):
             center_lat, center_lon = route_points[i]
-            # Use geographical distance in nautical miles
-            distance_to_center = geopy.distance.great_circle((lat, lon), (center_lat, center_lon)).nm
+            # Use vectorized haversine (scalar here)
+            distance_to_center = self.haversine_vectorized(lat, lon, center_lat, center_lon)
             if distance_to_center < min_distance_to_center:
                 min_distance_to_center = distance_to_center
                 closest_spacing = spacings[min(i, len(spacings) - 1)]
@@ -526,43 +741,148 @@ class weather_router:
         
         return min_distance_to_center <= constraint_radius
 
+    def get_possible_batch_optimized(self, lats, lons, routes, bearings_end, t, time_step_idx, route_points, spacings, previous_twas=None):
+        N = len(lats)
+        
+        # 1. Vectorized Wind
+        twd, tws = self.get_wind(t, lats, lons)
+        
+        # Ensure correct shapes for broadcasting
+        twd = np.asarray(twd)
+        tws = np.asarray(tws)
+        
+        if twd.ndim == 0:
+            # Scalar case
+            twd = np.broadcast_to(twd, (N,))
+            tws = np.broadcast_to(tws, (N,))
+        elif twd.shape != (N,):
+             # Ensure 1D array of correct length
+             twd = twd.flatten() if twd.size == N else np.broadcast_to(twd, (N,))
+             tws = tws.flatten() if tws.size == N else np.broadcast_to(tws, (N,))
+
+        # 2. Heading Candidates
+        heading_offsets = np.arange(-self.spread, self.spread + 1, 10)
+        M = len(heading_offsets)
+        
+        # (N, M)
+        headings = bearings_end[:, None] + heading_offsets[None, :]
+        headings = (headings + 360) % 360
+        
+        # 3. TWA & Speed
+        twd_exp = twd[:, None]
+        tws_exp = tws[:, None]
+        
+        twa = self.getTWA_from_heading(headings, twd_exp)
+        speed = self.polar.getSpeed(tws_exp, np.abs(twa))
+        
+        if previous_twas is not None:
+             prev_twa_exp = previous_twas[:, None]
+             tacking = self.is_tacking(twa, prev_twa_exp)
+             speed = np.where(tacking, speed * (1.0 - self.tack_penalty), speed)
+             
+        # 4. Destination
+        dist = speed * self.step
+        new_lats, new_lons = self.destination_vectorized(lats[:, None], lons[:, None], dist, headings)
+        
+        # Flatten
+        flat_lats = new_lats.ravel()
+        flat_lons = new_lons.ravel()
+        flat_headings = headings.ravel()
+        flat_twa = twa.ravel()
+        
+        # 5. Point Validity (Water vs Land)
+        valid_mask = self.point_validity(flat_lats, flat_lons)
+        
+        # 6. Optimization Region Constraint (Vectorized)
+        # Check dist to optimization path
+        # We need a vectorized version of is_within_optimization_region or loop over valid points
+        # For now, let's filter by validity first to reduce count
+        
+        valid_indices = np.where(valid_mask)[0]
+        
+        if len(valid_indices) > 0:
+            # Check Optimization Region
+            # This is hard to fully vectorize without a KDTree or similar, but we can do a batched check against the window center
+            # Find center for this time step
+            # logic from is_within_optimization_region:
+            # search window around time_step_idx
+            
+            window_size = self.optimise_window
+            start_idx = max(0, time_step_idx - window_size)
+            end_idx = min(len(route_points), time_step_idx + window_size + 1)
+            
+            # Extract relevant route points
+            window_points = np.array(route_points[start_idx:end_idx]) # (W, 2)
+            window_spacings = np.array(spacings[start_idx:end_idx])
+            
+            if len(window_points) > 0:
+                 # Check distances from valid candidates to ALL window points
+                 # valid_lats: (V,)
+                 # window_lats: (W,)
+                 # We need min dist to any window point <= corresponding spacing
+                 
+                 v_lats = flat_lats[valid_indices]
+                 v_lons = flat_lons[valid_indices]
+                 
+                 # Haversine matrix (V, W)
+                 # This might be heavy if V and W are large. 
+                 # V ~ 1000s, W ~ 50. 50k calcs -> OK.
+                 
+                 dists = self.haversine_vectorized(v_lats[:, None], v_lons[:, None], 
+                                                 window_points[:, 0][None, :], window_points[:, 1][None, :])
+                 
+                 # dists is (V, W)
+                 # Find min dist and its index for each V
+                 min_dists = np.min(dists, axis=1)
+                 min_idxs = np.argmin(dists, axis=1)
+                 
+                 # Corresponding allowed spacing
+                 allowed_spacing = window_spacings[min_idxs]
+                 
+                 # Filter
+                 opt_mask = min_dists <= allowed_spacing
+                 valid_indices = valid_indices[opt_mask]
+        
+        # 7. Leg Clear Check
+        if self.avoid_land_crossings and len(valid_indices) > 0:
+             p_indices = valid_indices // M
+             final_valid_indices = []
+             for idx in valid_indices:
+                 p = idx // M
+                 if self.leg_is_clear(lats[p], lons[p], flat_headings[idx], dist.ravel()[idx]):
+                     final_valid_indices.append(idx)
+             valid_indices = np.array(final_valid_indices, dtype=int)
+
+        if len(valid_indices) == 0:
+            return []
+            
+        # Reconstruct results
+        p_indices = valid_indices // M
+        res_lats = flat_lats[valid_indices]
+        res_lons = flat_lons[valid_indices]
+        res_twa = flat_twa[valid_indices]
+        res_bearings_end = self.bearing_vectorized(res_lats, res_lons, self.end_point[0], self.end_point[1])
+        
+        new_routes = []
+        for i, p in enumerate(p_indices):
+            r = routes[p] + [(res_lats[i], res_lons[i])]
+            new_routes.append(r)
+            
+        results = []
+        for i in range(len(res_lats)):
+             results.append([res_lats[i], res_lons[i], new_routes[i], res_bearings_end[i], res_twa[i]])
+             
+        return results
+
     def get_possible_optimized(self, lat_init, lon_init, route, bearing_end, t, time_step_idx, route_points, spacings, previous_twa=None):
-        """
-        Generate possible next positions with optimization region constraints.
-        """
-        possible = []
-        twd, tws = self.get_wind(t, lat_init, lon_init)
-        upper = int(bearing_end) + self.spread
-        lower = int(bearing_end) - self.spread
-        route.append('dummy')
+        # Compatibility wrapper
+        lats = np.array([lat_init])
+        lons = np.array([lon_init])
+        routes = [route]
+        bearings = np.array([bearing_end])
+        prev_twas = np.array([previous_twa]) if previous_twa is not None else None
         
-        for heading in range(lower, upper, 10):
-            heading = ((int(heading) + 360) % 360)
-            twa = self.getTWA_from_heading(heading, twd)
-            speed = self.polar.getSpeed(tws, np.abs(twa))
-            
-            # Apply tack penalty if tacking
-            if self.is_tacking(twa, previous_twa):
-                speed = speed * (1.0 - self.tack_penalty)
-            
-            end_point = geopy.distance.great_circle(
-                nautical=speed*self.step
-                ).destination(
-                (lat_init, lon_init), heading
-                )
-            lat, lon = end_point.latitude, end_point.longitude
-            route = route[:-1]
-            route.append((lat, lon))
-            
-            # Check point validity and optimization region constraints
-            leg_distance_nm = speed * self.step
-            if (self.point_validity(lat, lon) and
-                self.leg_is_clear(lat_init, lon_init, heading, leg_distance_nm) and
-                self.is_within_optimization_region(lat, lon, time_step_idx, route_points, spacings)):
-                bearing_end = self.getBearing((lat, lon), self.end_point)
-                possible.append([lat, lon, route, bearing_end, twa])
-        
-        return possible
+        return self.get_possible_batch_optimized(lats, lons, routes, bearings, t, time_step_idx, route_points, spacings, prev_twas)
 
     def optimize(self, previous_route, previous_isochrones):
         """
@@ -573,6 +893,21 @@ class weather_router:
         :param previous_isochrones: list of isochrone arrays from previous routing
         :return: optimized route
         """
+        if previous_route is None or previous_isochrones is None:
+            raise ValueError("optimize() requires previous_route and previous_isochrones (got None).")
+        if len(previous_route) == 0 or len(previous_isochrones) == 0:
+            raise ValueError(
+                f"optimize() requires non-empty previous_route and previous_isochrones "
+                f"(got {len(previous_route)=}, {len(previous_isochrones)=})."
+            )
+        if len(previous_route) != len(previous_isochrones):
+            raise ValueError(
+                "optimize() requires previous_route and previous_isochrones to have the same length "
+                f"(got {len(previous_route)} route points vs {len(previous_isochrones)} isochrones)."
+            )
+        if len(self.time_steps) == 0:
+            raise ValueError("optimize() requires non-empty self.time_steps.")
+
         # Calculate spacing constraints from previous isochrones
         base_spacings = self.calculate_isochrone_spacing(previous_isochrones)
         spacings = [s * 2 for s in base_spacings]
@@ -589,60 +924,71 @@ class weather_router:
         if not self.point_validity(lat, lon):
             print('start point error')
             return None
+
+        # Initial State
+        lats = np.array([lat])
+        lons = np.array([lon])
+        routes = [[self.start_point]]
+        bearings = np.array([self.getBearing((lat, lon), self.end_point)])
+        twas = None
         
-        step = 0
-        not_done = True
-        while not_done:
-            possible_at_t = None
-            possible = None
-            for step, t in enumerate(self.time_steps):
-                if step == 0:
-                    bearing_end = self.getBearing((lat, lon), self.end_point)
-                    possible = self.get_possible_optimized(
-                        lat, lon,
-                        [self.start_point],
-                        bearing_end,
-                        t,
-                        step,
-                        route_points,
-                        spacings
-                        )
-                else:
-                    # Apply prune_slow, prune_close_together, and equidistant pruning with double n_points
-                    possible = self.prune_slow(np.array(possible, dtype=object))
-                    possible, dist_wp = self.prune_close_together(possible)
+        # Step 0
+        t0 = self.time_steps[0]
+        possible = self.get_possible_batch_optimized(
+             lats, lons, routes, bearings, t0, 0, route_points, spacings, twas
+        )
+        if len(possible) == 0:
+            raise RuntimeError("Optimization pass produced no valid candidates at step 0.")
+
+        dist_wp = self.get_min_dist_wp(np.array(possible, dtype=object))
+        print('step', 0, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
+        if self.progress_callback:
+            self.progress_callback(0, dist_wp, possible)
+        self.optimized_isochrones.append(possible)
+
+        if dist_wp <= self.finish_size:
+            return self.get_fastest_route(use_optimized=True)
+
+        for step, t in enumerate(self.time_steps[1:], start=1):
+            
+            # Prune
+            possible = self.prune_slow(np.array(possible, dtype=object))
+            possible, _ = self.prune_close_together(possible)
+            
+            if len(possible) > self.optimise_n_points:
+                original_n_points = self.n_points
+                self.n_points = self.optimise_n_points
+                possible, _ = self.prune_equidistant(possible)
+                self.n_points = original_n_points
+
+            if len(possible) == 0:
+                raise RuntimeError(f"Optimization pass produced no valid candidates at step {step}.")
+
+            dist_wp = self.get_min_dist_wp(np.array(possible, dtype=object))
+            print('step', step, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
+            if self.progress_callback:
+                self.progress_callback(step, dist_wp, possible)
+            self.optimized_isochrones.append(possible)
+
+            if dist_wp <= self.finish_size:
+                break
+
+            # Next Step
+            arr = np.array(possible, dtype=object)
+            lats = arr[:, 0].astype(float)
+            lons = arr[:, 1].astype(float)
+            routes = list(arr[:, 2])
+            bearings = arr[:, 3].astype(float)
+            twas = arr[:, 4].astype(float)
+            
+            possible = self.get_possible_batch_optimized(
+                lats, lons, routes, bearings, t, step, route_points, spacings, twas
+            )
+            
+            if len(possible) == 0:
+                raise RuntimeError(f"Optimization pass produced no valid candidates after expanding step {step}.")
                     
-                    # Add equidistant pruning if we still have too many points
-                    if len(possible) > self.optimise_n_points:
-                        # Temporarily use optimise_n_points for pruning
-                        original_n_points = self.n_points
-                        self.n_points = self.optimise_n_points
-                        possible, _ = self.prune_equidistant(possible)
-                        self.n_points = original_n_points
-                        
-                        print('step', step, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
-                        if self.progress_callback:
-                            self.progress_callback(step, dist_wp, possible)
-                        self.optimized_isochrones.append(possible)
-                        if dist_wp > self.finish_size:
-                            if step == len(self.time_steps) - 1:
-                                not_done = False
-                                break
-                            else:
-                                possible_at_t = []
-                            for x in list(self.optimized_isochrones[-1]):
-                                lat, lon, route, bearing_end, previous_twa = x
-                                possible_at_t.append(
-                                    self.get_possible_optimized(
-                                        lat, lon, route, bearing_end, t, step, 
-                                        route_points, spacings, previous_twa
-                                        )
-                                    )
-                    else:
-                        not_done = False
-                        break
-                    
-                if possible_at_t:
-                    possible = sum(possible_at_t, [])
-        
+            if step == len(self.time_steps) - 1:
+                break
+                
         return self.get_fastest_route(use_optimized=True)
