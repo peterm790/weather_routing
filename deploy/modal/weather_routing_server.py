@@ -7,7 +7,7 @@ image = (
     modal.Image.debian_slim()
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20251223_99999"}) 
+    .env({"FORCE_BUILD": "20251223_999999"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -40,7 +40,17 @@ def get_route(
     crank_step: int = 30,
     avoid_land_crossings: bool = True,
     leg_check_spacing_nm: float = 2.0,
-    polar_file: str = "volvo70"
+    polar_file: str = "volvo70",
+    spread: int = 270,
+    wake_lim: int = 15,
+    rounding: int = 2,
+    n_points: int = 30,
+    tack_penalty: float = 0.5,
+    finish_size: float = 5.0,
+    optimise_n_points: int = 60,
+    optimise_window: int = 24,
+    leg_check_max_samples: int = 25,
+    point_validity_method: str = "nearest"
 ):
     from fastapi import Response
     from fastapi.responses import StreamingResponse
@@ -210,12 +220,17 @@ def get_route(
         point_validity_file=ds_lsm,
         avoid_land_crossings=avoid_land_crossings,
         leg_check_spacing_nm=leg_check_spacing_nm,
-        spread=270,
-        wake_lim=15,
-        rounding=2,
-        n_points=30,
+        spread=spread,
+        wake_lim=wake_lim,
+        rounding=rounding,
+        n_points=n_points,
+        optimise_n_points=optimise_n_points,
         progress_callback=progress_callback,
-        finish_size=5
+        finish_size=finish_size,
+        tack_penalty=tack_penalty,
+        optimise_window=optimise_window,
+        leg_check_max_samples=leg_check_max_samples,
+        point_validity_method=point_validity_method
     )
 
     # Run Routing
