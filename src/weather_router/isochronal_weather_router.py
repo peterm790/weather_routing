@@ -331,12 +331,6 @@ class weather_router:
             twa = self.getTWA_from_heading(heading, twd)
             speed = self.polar.getSpeed(tws, np.abs(twa))
             
-            # Apply tack penalty if tacking
-            if self.is_tacking(twa, previous_twa):
-                speed = speed * (1.0 - self.tack_penalty)
-            elif self.is_twa_change(twa, previous_twa):
-                speed = speed * (1.0 - self.twa_change_penalty)
-            
             end_point = geopy.distance.great_circle(
                 nautical=speed*self.step
                 ).destination(
@@ -727,7 +721,7 @@ class weather_router:
             
             # Prune
             possible = self.prune_slow(np.array(possible, dtype=object))
-            possible, _ = self.prune_close_together(possible)
+            possible, dist_wp = self.prune_close_together(possible)
             
             if len(possible) > self.optimise_n_points:
                 print('pruning in optimise!')
@@ -739,7 +733,6 @@ class weather_router:
             if len(possible) == 0:
                 raise RuntimeError(f"Optimization pass produced no valid candidates at step {step}.")
 
-            dist_wp = self.get_min_dist_wp(np.array(possible, dtype=object))
             print('step', step, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
             if self.progress_callback:
                 self.progress_callback(step, dist_wp, possible)
