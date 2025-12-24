@@ -184,6 +184,22 @@ class weather_router:
         initial_bearing = math.atan2(x, y)
         return (math.degrees(initial_bearing) + 360) % 360
 
+    def get_average_bearing(self, b1, b2):
+        """
+        Calculate the average of two bearings, handling the 0/360 wrap-around.
+        """
+        rad1 = math.radians(b1)
+        rad2 = math.radians(b2)
+        
+        # Sum of unit vectors
+        s = math.sin(rad1) + math.sin(rad2)
+        c = math.cos(rad1) + math.cos(rad2)
+        
+        avg_rad = math.atan2(s, c)
+        avg_deg = math.degrees(avg_rad)
+        
+        return (avg_deg + 360) % 360
+
     def getTWA_from_heading(self, bearing, TWD):
         TWA = bearing - TWD
         return (TWA + 180) % 360 - 180
@@ -290,11 +306,18 @@ class weather_router:
                 in_wake = True
         return in_wake
 
-    def prune_slow(self, arr):
+    def prune_slow(self, arr, waypoint=None):
         keep = [True] * len(arr)
         for i in range(len(arr)):
             if keep[i] is True:
-                wake = self.get_wake_lims(arr[i][3])
+                bearing_to_finish = arr[i][3]
+                if waypoint:
+                    bearing_to_wp = self.getBearing((arr[i][0], arr[i][1]), waypoint)
+                    target_bearing = self.get_average_bearing(bearing_to_finish, bearing_to_wp)
+                    wake = self.get_wake_lims(target_bearing)
+                else:
+                    wake = self.get_wake_lims(bearing_to_finish)
+
                 for j in range(len(arr)):
                     if not i == j:
                         if keep[j] is True:
@@ -806,7 +829,33 @@ class weather_router:
         for step, t in enumerate(self.time_steps[1:], start=1):
             
             # Prune
-            possible = self.prune_slow(np.array(possible, dtype=object))
+            # Find the best point (closest to finish) in the current set
+            arr_possible = np.array(possible, dtype=object)
+            dists = self.get_dist_wp(arr_possible)
+            best_idx = np.argmin(dists)
+            best_lat, best_lon = arr_possible[best_idx, 0], arr_possible[best_idx, 1]
+
+            # Find closest point in previous route within window
+            # We search a window around the current step to handle overtaking/falling behind
+            window_size = self.optimise_window * 2  # Double window size for robustness
+            start_idx = max(0, step - window_size)
+            end_idx = min(len(route_points), step + window_size + 1)
+            
+            min_dist = float('inf')
+            closest_idx = step if step < len(route_points) else len(route_points) - 1 # Default fallback
+            
+            for i in range(start_idx, end_idx):
+                r_lat, r_lon = route_points[i]
+                dist = geopy.distance.great_circle((r_lat, r_lon), (best_lat, best_lon)).nm
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_idx = i
+            
+            # Target the next waypoint (+1 from closest)
+            target_idx = min(closest_idx + 1, len(route_points) - 1)
+            waypoint = route_points[target_idx]
+            
+            possible = self.prune_slow(arr_possible, waypoint=waypoint)
             possible, dist_wp = self.prune_close_together(possible)
             
             if len(possible) > self.optimise_n_points:
