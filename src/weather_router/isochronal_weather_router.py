@@ -312,7 +312,7 @@ class weather_router:
             if keep[i] is True:
                 bearing_to_finish = arr[i][3]
                 if waypoint:
-                    #bearing_to_wp = self.getBearing((arr[i][0], arr[i][1]), waypoint)
+                    bearing_to_wp = self.getBearing((arr[i][0], arr[i][1]), waypoint)
                     #target_bearing = self.get_average_bearing(bearing_to_finish, bearing_to_wp)
                     target_bearing = bearing_to_wp
                     wake = self.get_wake_lims(target_bearing)
