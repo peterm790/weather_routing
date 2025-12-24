@@ -661,7 +661,7 @@ class weather_router:
         lower = int(bearing_end) - self.spread
         route.append('dummy')
         
-        for heading in range(lower, upper, 2):
+        for heading in range(lower, upper, 5):
             heading = ((int(heading) + 360) % 360)
             twa = self.getTWA_from_heading(heading, twd)
             speed = self.polar.getSpeed(tws, np.abs(twa))
