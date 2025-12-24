@@ -7,7 +7,7 @@ image = (
     modal.Image.debian_slim()
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20251223_inf11"}) 
+    .env({"FORCE_BUILD": "20251223_lastoneipromise"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
