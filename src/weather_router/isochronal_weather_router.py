@@ -852,8 +852,11 @@ class weather_router:
                     closest_idx = i
             
             # Target the next waypoint (+1 from closest)
-            target_idx = min(closest_idx + 1, len(route_points) - 1)
-            waypoint = route_points[target_idx]
+            # If we are at the end of the previous route, target the final destination
+            if closest_idx + 1 < len(route_points):
+                waypoint = route_points[closest_idx + 1]
+            else:
+                waypoint = self.end_point
             
             possible = self.prune_slow(arr_possible, waypoint=waypoint)
             possible, dist_wp = self.prune_close_together(possible)
