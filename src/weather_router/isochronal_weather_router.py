@@ -643,7 +643,7 @@ class weather_router:
                 closest_spacing = spacings[min(i, len(spacings) - 1)]
         
         # Use the closest spacing as constraint radius (in nautical miles)
-        constraint_radius = closest_spacing * 2
+        constraint_radius = closest_spacing * 4
         
         return min_distance_to_center <= constraint_radius
 
@@ -852,10 +852,14 @@ class weather_router:
                     min_dist = dist
                     closest_idx = i
             
-            # Target the next waypoint (+1 from closest)
-            # If we are at the end of the previous route, target the final destination
-            if closest_idx + 1 < len(route_points):
-                waypoint = route_points[closest_idx + 1]
+            # Target a waypoint further ahead to stabilize the bearing during tacking
+            # +5 steps ahead provides a better "general direction" than the immediate next point
+            lookahead_steps = 5
+            target_idx = closest_idx + lookahead_steps
+            
+            # If we are near the end of the previous route, target the final destination
+            if target_idx < len(route_points):
+                waypoint = route_points[target_idx]
             else:
                 waypoint = self.end_point
             
