@@ -28,7 +28,7 @@ class weather_router:
             optimise_n_points=None,
             optimise_window=24,
             progress_callback=None,
-            avoid_land_crossings: bool = False,
+            avoid_land_crossings=False,
             leg_check_spacing_nm: float = 1.0,
             leg_check_max_samples: int = 25,
             ):
@@ -68,8 +68,15 @@ class weather_router:
                 time step window size (±) for optimization constraint search (default: 24)
             :param progress_callback: function, optional
                 Callback function to report progress. Called with (step, dist_to_finish, isochrones).
-            :param avoid_land_crossings: bool
-                If True, reject any candidate leg that crosses land by sampling intermediate points.
+            :param avoid_land_crossings: bool | str
+                Land-crossing mode (leg validation):
+                - 'point': validate only start+end points (does not detect crossings between them)
+                - 'step': sample intermediate points along the leg (fast, can miss thin crossings)
+                - 'strict': reject if ANY intersected land-sea-mask grid cell is land (conservative/slower)
+
+                Backward-compatible bool forms:
+                - False -> 'point'
+                - True  -> 'step'
             :param leg_check_spacing_nm: float
                 Target sampling spacing (nautical miles) along each candidate leg.
                 Must be >= 0.25nm.
@@ -102,7 +109,19 @@ class weather_router:
         if leg_check_max_samples < 1:
             raise ValueError("leg_check_max_samples must be >= 1")
 
-        self.avoid_land_crossings = avoid_land_crossings
+        # Land-crossing mode:
+        # - 'point': endpoint validity only (no segment crossing detection)
+        # - 'step' : sparse intermediate-point sampling via point_validity()
+        # - 'strict': full grid-cell intersection check using the underlying land-sea mask
+        if isinstance(avoid_land_crossings, bool):
+            self.avoid_land_crossings = 'step' if avoid_land_crossings else 'point'
+        elif isinstance(avoid_land_crossings, str):
+            mode = avoid_land_crossings.lower()
+            if mode not in ('point', 'step', 'strict'):
+                raise ValueError("avoid_land_crossings must be one of: 'point', 'step', 'strict'")
+            self.avoid_land_crossings = mode
+        else:
+            raise ValueError("avoid_land_crossings must be a bool or one of: 'point', 'step', 'strict'")
         self.leg_check_spacing_nm = float(leg_check_spacing_nm)
         self.leg_check_max_samples = int(leg_check_max_samples)
 
@@ -113,6 +132,7 @@ class weather_router:
             lsm = land_sea_mask(point_validity_extent, file=point_validity_file, method = point_validity_method)
         else:
             lsm = land_sea_mask(file=point_validity_file, method = point_validity_method)
+        self._lsm = lsm
         self.point_validity = lsm.point_validity
 
     def leg_is_clear(self, lat0, lon0, heading, distance_nm):
@@ -122,8 +142,8 @@ class weather_router:
         We check intermediate points along the same initial bearing used to compute the endpoint.
         Endpoint validity should be checked separately by the caller.
         """
-        if not self.avoid_land_crossings:
-            return True
+        if self.avoid_land_crossings == 'point':
+            return self._lsm.leg_is_clear(lat0, lon0, heading, distance_nm, mode='point')
 
         if distance_nm is None:
             return False
@@ -136,26 +156,20 @@ class weather_router:
         if distance_nm <= 0:
             return True
 
-        spacing = self.leg_check_spacing_nm
+        if self.avoid_land_crossings == 'strict':
+            return self._lsm.leg_is_clear(
+                lat0, lon0, heading, distance_nm,
+                mode='strict',
+                land_threshold=0.5,
+            )
 
-        # Always check at least the midpoint for short legs (distance < spacing),
-        # otherwise sample at approximately `spacing` nm intervals.
-        if distance_nm <= spacing:
-            sample_distances = [distance_nm * 0.5]
-        else:
-            n_intervals = int(math.ceil(distance_nm / spacing))
-            # interior sample points are 1..n_intervals-1
-            n_interior = max(1, n_intervals - 1)
-            if n_interior > self.leg_check_max_samples:
-                # Reduce samples while keeping a roughly uniform spacing
-                n_intervals = self.leg_check_max_samples + 1
-            sample_distances = [(distance_nm * i / n_intervals) for i in range(1, n_intervals)]
-
-        for d in sample_distances:
-            p = geopy.distance.great_circle(nautical=d).destination((lat0, lon0), heading)
-            if not self.point_validity(p.latitude, p.longitude):
-                return False
-        return True
+        # Step-wise sparse sampling mode
+        return self._lsm.leg_is_clear(
+            lat0, lon0, heading, distance_nm,
+            mode='step',
+            spacing_nm=self.leg_check_spacing_nm,
+            max_samples=self.leg_check_max_samples,
+        )
 
     def get_min_dist_wp(self, isochrones):
         dists = []
@@ -203,6 +217,103 @@ class weather_router:
     def getTWA_from_heading(self, bearing, TWD):
         TWA = bearing - TWD
         return (TWA + 180) % 360 - 180
+
+    def leg_finish_intersection(self, lat0, lon0, heading_deg, leg_distance_nm):
+        """
+        Heading-aware check whether a great-circle leg intersects the finish circle.
+
+        We treat the finish as a circle of radius `self.finish_size` (nautical miles)
+        around `self.end_point`. If the *segment* (not the infinite great-circle) intersects,
+        return the first intersection point along the segment.
+
+        Returns:
+            (intersects: bool, hit_lat: float|None, hit_lon: float|None, hit_distance_nm: float|None)
+        """
+        # Validate inputs
+        try:
+            lat0 = float(lat0)
+            lon0 = float(lon0)
+            heading_deg = float(heading_deg)
+            leg_distance_nm = float(leg_distance_nm)
+        except Exception:
+            raise ValueError("leg_finish_intersection(): lat/lon/heading/leg_distance must be numeric.")
+
+        if leg_distance_nm < 0:
+            raise ValueError("leg_finish_intersection(): leg_distance_nm must be >= 0.")
+        if self.finish_size <= 0:
+            raise ValueError("leg_finish_intersection(): finish_size must be > 0.")
+
+        finish_lat, finish_lon = self.end_point
+        # Great-circle distance from start to finish center (nm)
+        dist_to_center_nm = geopy.distance.great_circle((lat0, lon0), (finish_lat, finish_lon)).nm
+
+        # Already inside finish circle
+        if dist_to_center_nm <= self.finish_size:
+            return True, lat0, lon0, 0.0
+
+        # Quick necessary condition: to hit a circle of radius R, the center must be within L+R
+        if dist_to_center_nm > leg_distance_nm + self.finish_size:
+            return False, None, None, None
+
+        # Spherical navigation (Earth radius in nautical miles)
+        R_earth_nm = 3440.065
+
+        # Convert to angular distances (radians)
+        delta13 = dist_to_center_nm / R_earth_nm
+        delta12 = leg_distance_nm / R_earth_nm
+        deltaR = self.finish_size / R_earth_nm
+
+        # Bearings (radians)
+        theta12 = math.radians(heading_deg % 360.0)
+        theta13 = math.radians(self.getBearing((lat0, lon0), (finish_lat, finish_lon)))
+
+        # Cross-track angular distance to the infinite great-circle path
+        # δxt = asin( sin(δ13) * sin(θ13-θ12) )
+        xt_arg = math.sin(delta13) * math.sin(theta13 - theta12)
+        # Clamp for numerical stability
+        xt_arg = max(-1.0, min(1.0, xt_arg))
+        delta_xt = math.asin(xt_arg)
+
+        if abs(delta_xt) > deltaR:
+            return False, None, None, None
+
+        # Along-track angular distance to closest approach (signed)
+        # δat = atan2( sin(δ13)*cos(θ13-θ12), cos(δ13) )
+        delta_at = math.atan2(
+            math.sin(delta13) * math.cos(theta13 - theta12),
+            math.cos(delta13),
+        )
+
+        # If closest approach is behind the start, the segment can't intersect going forward,
+        # except for the "already inside" case handled above.
+        # We still allow intersection if the circle extends forward across the start, which
+        # would imply delta_at + delta_h >= 0; handle below.
+
+        # Half-chord angular distance from closest approach to intersection points
+        # δh = acos( cos(δR) / cos(δxt) )
+        cos_delta_xt = math.cos(delta_xt)
+        if cos_delta_xt == 0.0:
+            # Path is 90deg from center at closest approach; only intersects if deltaR == pi/2,
+            # which cannot happen for realistic finish radii.
+            return False, None, None, None
+
+        h_arg = math.cos(deltaR) / cos_delta_xt
+        h_arg = max(-1.0, min(1.0, h_arg))
+        delta_h = math.acos(h_arg)
+
+        # Intersection distances along track (radians), in forward direction
+        delta_i1 = delta_at - delta_h
+        delta_i2 = delta_at + delta_h
+
+        # Pick the first intersection within the segment [0, delta12]
+        candidates = [d for d in (delta_i1, delta_i2) if 0.0 <= d <= delta12]
+        if not candidates:
+            return False, None, None, None
+
+        delta_hit = min(candidates)
+        hit_distance_nm = delta_hit * R_earth_nm
+        hit_point = geopy.distance.great_circle(nautical=hit_distance_nm).destination((lat0, lon0), heading_deg)
+        return True, hit_point.latitude, hit_point.longitude, hit_distance_nm
 
     def is_tacking(self, current_twa, previous_twa):
         """
@@ -391,14 +502,81 @@ class weather_router:
         
         return selected_arr, dist_wp_min
 
+    def prune_behind_route_step(self, possible, step, route_points, window_size, behind_threshold_steps=3):
+        """
+        Prune candidates that are too far behind the previous route.
+
+        For each candidate point, find the closest `route_points[i]` (searching within a bounded
+        window around the current `step` for performance). If the closest route step index is
+        `behind_threshold_steps` or more behind the current `step`, prune the candidate.
+
+        Notes:
+        - If `step >= len(route_points)`, this pruning is disabled and `possible` is returned unchanged.
+        - No implicit fallbacks: invalid inputs raise.
+        """
+        if route_points is None:
+            raise ValueError("prune_behind_route_step(): route_points must not be None.")
+        if step is None or step < 0:
+            raise ValueError(f"prune_behind_route_step(): step must be a non-negative int (got {step}).")
+        if window_size is None or window_size < 0:
+            raise ValueError(
+                f"prune_behind_route_step(): window_size must be a non-negative int (got {window_size})."
+            )
+        if behind_threshold_steps is None or behind_threshold_steps < 0:
+            raise ValueError(
+                "prune_behind_route_step(): behind_threshold_steps must be a non-negative int "
+                f"(got {behind_threshold_steps})."
+            )
+
+        n_route = len(route_points)
+        if n_route == 0:
+            raise ValueError("prune_behind_route_step(): route_points must be non-empty.")
+        if step >= n_route:
+            return possible
+
+        arr = np.array(possible, dtype=object)
+        if arr.size == 0:
+            return arr
+        if arr.ndim != 2 or arr.shape[1] < 2:
+            raise ValueError(
+                "prune_behind_route_step(): expected candidates shaped like [lat, lon, ...] per row "
+                f"(got arr.ndim={arr.ndim}, arr.shape={arr.shape})."
+            )
+
+        start_idx = max(0, step - window_size)
+        end_idx = min(n_route, step + window_size + 1)
+        if start_idx >= end_idx:
+            raise ValueError(
+                "prune_behind_route_step(): empty search window. "
+                f"Computed [{start_idx}, {end_idx}) for {step=}, {window_size=}, {n_route=}."
+            )
+
+        keep = []
+        for row in arr:
+            lat = float(row[0])
+            lon = float(row[1])
+
+            min_dist = float("inf")
+            closest_idx = None
+            for i in range(start_idx, end_idx):
+                r_lat, r_lon = route_points[i]
+                dist_nm = geopy.distance.great_circle((r_lat, r_lon), (lat, lon)).nm
+                if dist_nm < min_dist:
+                    min_dist = dist_nm
+                    closest_idx = i
+
+            if closest_idx is None:
+                raise ValueError("prune_behind_route_step(): internal error: no closest_idx found.")
+
+            keep.append((step - closest_idx) < behind_threshold_steps)
+
+        return arr[keep]
+
     def get_possible(self, lat_init, lon_init, route, bearing_end, t, previous_twa=None):
         possible = []
         twd, tws = self.get_wind(t, lat_init, lon_init)
-        
-        # Check if we are close enough to the finish to check for intersection
-        # This optimization avoids checking every leg when far away
+        # Distance to finish center (nm) used for a quick necessary-condition check
         dist_to_finish = geopy.distance.great_circle((lat_init, lon_init), self.end_point).nm
-        check_intersection = dist_to_finish < (self.finish_size * 4)
 
         upper = int(bearing_end) + self.spread
         lower = int(bearing_end) - self.spread
@@ -419,20 +597,23 @@ class weather_router:
                 )
             lat, lon = end_point.latitude, end_point.longitude
 
-            # Check if we crossed the finish
-            intersected = False
-            if check_intersection and self.has_intersected_finish(lat_init, lon_init, lat, lon):
-                lat, lon = self.end_point
-                intersected = True
-
             route = route[:-1]
             route.append((lat, lon))
             
-            # Recalculate distance for leg check if we snapped, otherwise use theoretical distance
-            if intersected:
-                leg_distance_nm = geopy.distance.great_circle((lat_init, lon_init), (lat, lon)).nm
-            else:
-                leg_distance_nm = speed * self.step
+            # Default: theoretical leg length for this step
+            leg_distance_nm = speed * self.step
+
+            # Heading-aware finish-circle intersection:
+            # Only attempt the more expensive intersection math if the finish circle is reachable in principle.
+            if dist_to_finish <= leg_distance_nm + self.finish_size:
+                intersects, hit_lat, hit_lon, hit_dist_nm = self.leg_finish_intersection(
+                    lat_init, lon_init, heading, leg_distance_nm
+                )
+                if intersects:
+                    lat, lon = hit_lat, hit_lon
+                    route = route[:-1]
+                    route.append((lat, lon))
+                    leg_distance_nm = hit_dist_nm
 
             if self.point_validity(lat, lon) and self.leg_is_clear(lat_init, lon_init, heading, leg_distance_nm):
                 bearing_end = self.getBearing((lat, lon), self.end_point)
@@ -654,9 +835,8 @@ class weather_router:
         possible = []
         twd, tws = self.get_wind(t, lat_init, lon_init)
         
-        # Check if we are close enough to the finish to check for intersection
+        # Distance to finish center (nm) used for a quick necessary-condition check
         dist_to_finish = geopy.distance.great_circle((lat_init, lon_init), self.end_point).nm
-        check_intersection = dist_to_finish < (self.finish_size * 4)
 
         upper = int(bearing_end) + self.spread
         lower = int(bearing_end) - self.spread
@@ -680,24 +860,26 @@ class weather_router:
                 )
             lat, lon = end_point.latitude, end_point.longitude
 
-            # Check if we crossed the finish
-            intersected = False
-            if check_intersection and self.has_intersected_finish(lat_init, lon_init, lat, lon):
-                lat, lon = self.end_point
-                intersected = True
-
             route = route[:-1]
             route.append((lat, lon))
             
             # Check point validity and optimization region constraints
-            if intersected:
-                leg_distance_nm = geopy.distance.great_circle((lat_init, lon_init), (lat, lon)).nm
-            else:
-                leg_distance_nm = speed * self.step
+            leg_distance_nm = speed * self.step
+
+            intersects = False
+            if dist_to_finish <= leg_distance_nm + self.finish_size:
+                intersects, hit_lat, hit_lon, hit_dist_nm = self.leg_finish_intersection(
+                    lat_init, lon_init, heading, leg_distance_nm
+                )
+                if intersects:
+                    lat, lon = hit_lat, hit_lon
+                    route = route[:-1]
+                    route.append((lat, lon))
+                    leg_distance_nm = hit_dist_nm
 
             if (self.point_validity(lat, lon) and
                 self.leg_is_clear(lat_init, lon_init, heading, leg_distance_nm) and
-                (intersected or self.is_within_optimization_region(lat, lon, time_step_idx, route_points, spacings))):
+                (intersects or self.is_within_optimization_region(lat, lon, time_step_idx, route_points, spacings))):
                 bearing_end = self.getBearing((lat, lon), self.end_point)
                 possible.append([lat, lon, route, bearing_end, twa])
         
@@ -830,6 +1012,20 @@ class weather_router:
         for step, t in enumerate(self.time_steps[1:], start=1):
             
             # Prune
+            window_size = self.optimise_window * 2  # wider window for robustness during optimisation
+
+            possible = self.prune_behind_route_step(
+                possible,
+                step=step,
+                route_points=route_points,
+                window_size=window_size,
+                behind_threshold_steps=3,
+            )
+            if len(possible) == 0:
+                raise RuntimeError(
+                    f"Optimization pass produced no valid candidates at step {step} after step-behind pruning."
+                )
+
             # Find the best point (closest to finish) in the current set
             arr_possible = np.array(possible, dtype=object)
             dists = self.get_dist_wp(arr_possible)
@@ -838,7 +1034,6 @@ class weather_router:
 
             # Find closest point in previous route within window
             # We search a window around the current step to handle overtaking/falling behind
-            window_size = self.optimise_window * 2  # Double window size for robustness
             start_idx = max(0, step - window_size)
             end_idx = min(len(route_points), step + window_size + 1)
             

@@ -1,13 +1,14 @@
 import modal
 import io
 import urllib.request
+from typing import Union
 
 # Define the image with dependencies
 image = (
     modal.Image.debian_slim()
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20251223_lastoneipromise2"}) 
+    .env({"FORCE_BUILD": "20251223_lastoneipromise3"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -38,7 +39,7 @@ def get_route(
     lead_time_start: int = 0,
     freq: str = "1hr",
     crank_step: int = 30,
-    avoid_land_crossings: bool = True,
+    avoid_land_crossings: Union[bool, str] = True,
     leg_check_spacing_nm: float = 2.0,
     polar_file: str = "volvo70",
     spread: int = 270,
@@ -54,6 +55,35 @@ def get_route(
     twa_change_penalty: float = 0.02,
     twa_change_threshold: float = 5.0
 ):
+    print("query params:")
+    print(f"  start_lat={start_lat}")
+    print(f"  start_lon={start_lon}")
+    print(f"  end_lat={end_lat}")
+    print(f"  end_lon={end_lon}")
+    print(f"  min_lat={min_lat}")
+    print(f"  min_lon={min_lon}")
+    print(f"  max_lat={max_lat}")
+    print(f"  max_lon={max_lon}")
+    print(f"  init_time={init_time}")
+    print(f"  lead_time_start={lead_time_start}")
+    print(f"  freq='{freq}'")
+    print(f"  crank_step={crank_step}")
+    print(f"  avoid_land_crossings={avoid_land_crossings}")
+    print(f"  leg_check_spacing_nm={leg_check_spacing_nm}")
+    print(f"  polar_file='{polar_file}'")
+    print(f"  spread={spread}")
+    print(f"  wake_lim={wake_lim}")
+    print(f"  rounding={rounding}")
+    print(f"  n_points={n_points}")
+    print(f"  tack_penalty={tack_penalty}")
+    print(f"  finish_size={finish_size}")
+    print(f"  optimise_n_points={optimise_n_points}")
+    print(f"  optimise_window={optimise_window}")
+    print(f"  leg_check_max_samples={leg_check_max_samples}")
+    print(f"  point_validity_method='{point_validity_method}'")
+    print(f"  twa_change_penalty={twa_change_penalty}")
+    print(f"  twa_change_threshold={twa_change_threshold}")
+
     from fastapi import Response
     from fastapi.responses import StreamingResponse
     import xarray as xr
@@ -73,6 +103,23 @@ def get_route(
 
     if leg_check_spacing_nm < 0.25:
         return Response(content="leg_check_spacing_nm must be >= 0.25 (nautical miles)", status_code=400)
+
+    # Normalize/validate land-crossing mode.
+    # Accepted: 'point', 'step', 'strict' (or bool for backward compatibility: False->point, True->step).
+    if isinstance(avoid_land_crossings, bool):
+        avoid_land_crossings_mode = 'step' if avoid_land_crossings else 'point'
+    elif isinstance(avoid_land_crossings, str):
+        avoid_land_crossings_mode = avoid_land_crossings.lower()
+        if avoid_land_crossings_mode not in ("point", "step", "strict"):
+            return Response(
+                content="avoid_land_crossings must be one of: 'point', 'step', 'strict' (or bool)",
+                status_code=400,
+            )
+    else:
+        return Response(
+            content="avoid_land_crossings must be one of: 'point', 'step', 'strict' (or bool)",
+            status_code=400,
+        )
 
     start_point = (start_lat, start_lon)
     end_point = (end_lat, end_lon)
@@ -220,7 +267,7 @@ def get_route(
         end_point=end_point,
         point_validity_extent=[min_lat, min_lon, max_lat, max_lon],
         point_validity_file=ds_lsm,
-        avoid_land_crossings=avoid_land_crossings,
+        avoid_land_crossings=avoid_land_crossings_mode,
         leg_check_spacing_nm=leg_check_spacing_nm,
         spread=spread,
         wake_lim=wake_lim,

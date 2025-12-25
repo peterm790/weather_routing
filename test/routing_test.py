@@ -19,20 +19,29 @@ while maintaining route history and allowing performance tuning via n_points.
 
 To run tests:
 - python routing_test.py (runs basic routing)
-- python run_tests.py (runs full test suite with reporting)
+- python ../run_tests.py (runs full test suite)
 """
 
 import xarray as xr
 import zarr
 import numpy as np
+import pytest
 import sys
-sys.path.insert(0, '../src/')
-sys.path.insert(0, './src/')
+import os
+from pathlib import Path
+
+# Ensure local `src/` is importable without requiring installation.
+_TEST_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _TEST_DIR.parent
+_SRC_DIR = _REPO_ROOT / "src"
+if not _SRC_DIR.exists():
+    raise FileNotFoundError(f"Expected src directory at: {_SRC_DIR}")
+sys.path.insert(0, str(_SRC_DIR))
 from weather_router.isochronal_weather_router import weather_router
 from weather_router.polar import Polar
 
 
-ds = xr.open_zarr('test_ds.zarr')
+ds = xr.open_zarr(str(_TEST_DIR / "test_ds.zarr"))
 
 def getWindAt(t, lat, lon):
     tws_sel = ds.tws.sel(time = t, method = 'nearest')
@@ -41,20 +50,41 @@ def getWindAt(t, lat, lon):
     twd_sel = twd_sel.sel(lat = lat, lon = lon, method = 'nearest')
     return (np.float32(twd_sel.values), np.float32(tws_sel.values))
 
-#def route():
-weatherrouter = weather_router(Polar('volvo70.pol'), getWindAt, ds.time.values[:4], 12, (-34,0),(-34,17), tack_penalty=0.5)
-weatherrouter.route()
+_weatherrouter = None
+
+
+def _get_weatherrouter():
+    """
+    Lazily create+route a base router once per process.
+    Avoids expensive side-effects at module import time.
+    """
+    global _weatherrouter
+    if _weatherrouter is None:
+        _weatherrouter = weather_router(
+            Polar(str(_TEST_DIR / "volvo70.pol")),
+            getWindAt,
+            ds.time.values[:4],
+            12,
+            (-34, 0),
+            (-34, 17),
+            tack_penalty=0.5,
+        )
+        _weatherrouter.route()
+    return _weatherrouter
 
 
 def test_polar():
-    assert weatherrouter.polar.getSpeed(20,45) == np.float64(12.5)
+    weatherrouter = _get_weatherrouter()
+    assert weatherrouter.polar.getSpeed(20, 45) == np.float64(12.5)
 
 def test_isochrones():
+    weatherrouter = _get_weatherrouter()
     assert type(weatherrouter.get_isochrones()) == list
     assert len(weatherrouter.get_isochrones()) == 3
     assert len(weatherrouter.get_isochrones()[0][0]) == 5  # Updated: now 5 columns [lat, lon, route, bearing, twa]
 
 def test_fastest():
+    weatherrouter = _get_weatherrouter()
     fastest_route = weatherrouter.get_fastest_route(stats=True)
     assert fastest_route.shape[0] == 4  # 4 time steps
     assert fastest_route.shape[1] >= 12  # At least 12 columns (now includes tacking info)
@@ -66,7 +96,7 @@ def test_fastest():
 def test_n_points_parameter():
     """Test that n_points parameter is properly initialized"""
     router_with_custom_n_points = weather_router(
-        Polar('volvo70.pol'), 
+        Polar(str(_TEST_DIR / "volvo70.pol")),
         getWindAt, 
         ds.time.values[:2], 
         12, 
@@ -91,7 +121,7 @@ def test_return_equidistant():
     
     # Create a router with n_points=5 for this test
     test_router = weather_router(
-        Polar('volvo70.pol'), 
+        Polar(str(_TEST_DIR / "volvo70.pol")),
         getWindAt, 
         ds.time.values[:2], 
         12, 
@@ -138,7 +168,7 @@ def test_prune_equidistant():
     
     # Create router with n_points=3
     test_router = weather_router(
-        Polar('volvo70.pol'), 
+        Polar(str(_TEST_DIR / "volvo70.pol")),
         getWindAt, 
         ds.time.values[:2], 
         12, 
@@ -164,7 +194,7 @@ def test_equidistant_routing_integration():
     """Test that routing works with equidistant pruning"""
     # Create a router with small n_points for faster testing
     test_router = weather_router(
-        Polar('volvo70.pol'), 
+        Polar(str(_TEST_DIR / "volvo70.pol")),
         getWindAt, 
         ds.time.values[:3],  # Use fewer time steps for speed
         12, 
@@ -202,7 +232,7 @@ def test_equidistant_vs_traditional():
     
     # Create two identical routers with different n_points
     router1 = weather_router(
-        Polar('volvo70.pol'), 
+        Polar(str(_TEST_DIR / "volvo70.pol")),
         getWindAt, 
         ds.time.values[:3], 
         12, 
@@ -213,7 +243,7 @@ def test_equidistant_vs_traditional():
     )
     
     router2 = weather_router(
-        Polar('volvo70.pol'), 
+        Polar(str(_TEST_DIR / "volvo70.pol")),
         getWindAt, 
         ds.time.values[:3], 
         12, 
@@ -247,7 +277,7 @@ def test_tack_penalty():
     """Test that the tack penalty feature works correctly"""
     # Create a router with a high tack penalty for testing
     test_router = weather_router(
-        Polar('volvo70.pol'), 
+        Polar(str(_TEST_DIR / "volvo70.pol")),
         getWindAt, 
         ds.time.values[:3], 
         12, 
@@ -272,11 +302,86 @@ def test_tack_penalty():
     assert 'base_boat_speed' in route.columns
     assert 'boat_speed' in route.columns
     assert 'is_tacking' in route.columns
+    assert 'is_twa_change' in route.columns
     
     # Check that tack penalty is applied correctly
     for i, row in route.iterrows():
         if row['is_tacking'] == True:
             expected_speed = row['base_boat_speed'] * (1.0 - test_router.tack_penalty)
             assert np.isclose(row['boat_speed'], expected_speed, rtol=0.01)
+        elif row['is_twa_change'] == True:
+            expected_speed = row['base_boat_speed'] * (1.0 - test_router.twa_change_penalty)
+            assert np.isclose(row['boat_speed'], expected_speed, rtol=0.01)
         else:
             assert np.isclose(row['boat_speed'], row['base_boat_speed'], rtol=0.01)
+
+
+def test_strict_land_crossing_all_ocean_leg():
+    """
+    Strict mode should accept a short open-ocean leg.
+    Uses the router's default ERA5 land-sea mask (no dummy data).
+    """
+    weatherrouter = _get_weatherrouter()
+    lsm = weatherrouter._lsm
+    assert lsm.leg_is_clear_strict(0.0, -140.0, 90.0, 60.0) is True
+
+
+def test_strict_land_crossing_rejects_land_leg():
+    """
+    Strict mode should reject a leg that touches land (here: starts on land).
+    """
+    weatherrouter = _get_weatherrouter()
+    lsm = weatherrouter._lsm
+    assert lsm.leg_is_clear_strict(51.0, 0.0, 90.0, 30.0) is False
+
+
+def test_avoid_land_crossings_modes():
+    """
+    Ensure the router accepts the three land-crossing modes:
+    - 'point' (endpoint-only)
+    - 'step'  (sparse sampling)
+    - 'strict' (grid-cell strict)
+    """
+    r_point = weather_router(
+        Polar(str(_TEST_DIR / "volvo70.pol")),
+        getWindAt,
+        ds.time.values[:2],
+        12,
+        (-34, 0),
+        (-34, 17),
+        avoid_land_crossings="point",
+    )
+    assert r_point.avoid_land_crossings == "point"
+
+    r_step = weather_router(
+        Polar(str(_TEST_DIR / "volvo70.pol")),
+        getWindAt,
+        ds.time.values[:2],
+        12,
+        (-34, 0),
+        (-34, 17),
+        avoid_land_crossings="step",
+    )
+    assert r_step.avoid_land_crossings == "step"
+
+    r_strict = weather_router(
+        Polar(str(_TEST_DIR / "volvo70.pol")),
+        getWindAt,
+        ds.time.values[:2],
+        12,
+        (-34, 0),
+        (-34, 17),
+        avoid_land_crossings="strict",
+    )
+    assert r_strict.avoid_land_crossings == "strict"
+
+    with pytest.raises(ValueError):
+        weather_router(
+            Polar(str(_TEST_DIR / "volvo70.pol")),
+            getWindAt,
+            ds.time.values[:2],
+            12,
+            (-34, 0),
+            (-34, 17),
+            avoid_land_crossings="nope",
+        )
