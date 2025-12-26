@@ -122,6 +122,16 @@ class weather_router:
             self.avoid_land_crossings = mode
         else:
             raise ValueError("avoid_land_crossings must be a bool or one of: 'point', 'step', 'strict'")
+
+        # Performance tweak:
+        # - During the *main routing* pass, cap land-crossing checks at 'step' (never 'strict').
+        # - During the *optimisation* pass, allow 'strict' when requested.
+        if self.avoid_land_crossings == 'strict':
+            self.avoid_land_crossings_route = 'step'
+            self.avoid_land_crossings_optimise = 'strict'
+        else:
+            self.avoid_land_crossings_route = self.avoid_land_crossings
+            self.avoid_land_crossings_optimise = self.avoid_land_crossings
         self.leg_check_spacing_nm = float(leg_check_spacing_nm)
         self.leg_check_max_samples = int(leg_check_max_samples)
 
@@ -135,14 +145,16 @@ class weather_router:
         self._lsm = lsm
         self.point_validity = lsm.point_validity
 
-    def leg_is_clear(self, lat0, lon0, heading, distance_nm):
+    def leg_is_clear(self, lat0, lon0, heading, distance_nm, *, mode: str | None = None):
         """
         Return True if the great-circle leg stays on water.
 
         We check intermediate points along the same initial bearing used to compute the endpoint.
         Endpoint validity should be checked separately by the caller.
         """
-        if self.avoid_land_crossings == 'point':
+        mode_to_use = mode if mode is not None else self.avoid_land_crossings_route
+
+        if mode_to_use == 'point':
             return self._lsm.leg_is_clear(lat0, lon0, heading, distance_nm, mode='point')
 
         if distance_nm is None:
@@ -156,7 +168,7 @@ class weather_router:
         if distance_nm <= 0:
             return True
 
-        if self.avoid_land_crossings == 'strict':
+        if mode_to_use == 'strict':
             return self._lsm.leg_is_clear(
                 lat0, lon0, heading, distance_nm,
                 mode='strict',
@@ -878,7 +890,7 @@ class weather_router:
                     leg_distance_nm = hit_dist_nm
 
             if (self.point_validity(lat, lon) and
-                self.leg_is_clear(lat_init, lon_init, heading, leg_distance_nm) and
+                self.leg_is_clear(lat_init, lon_init, heading, leg_distance_nm, mode=self.avoid_land_crossings_optimise) and
                 (intersects or self.is_within_optimization_region(lat, lon, time_step_idx, route_points, spacings))):
                 bearing_end = self.getBearing((lat, lon), self.end_point)
                 possible.append([lat, lon, route, bearing_end, twa])
