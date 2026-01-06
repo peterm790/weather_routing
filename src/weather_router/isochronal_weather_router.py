@@ -1108,7 +1108,8 @@ class weather_router:
             spacings = self.calculate_isochrone_spacing(curr_isochrones)
             #spacings = [s * 1 for s in base_spacings]
 
-            if spacings[0] < self.finish_size:
+            # Clamp on the first optimisation pass only to stabilize; allow adaptation thereafter
+            if pass_idx == 0 and len(spacings) > 0 and spacings[0] < self.finish_size:
                 spacings = [self.finish_size] * len(spacings)
         
             # Extract route points for constraint centers.
