@@ -21,3 +21,4 @@ dependencies:
 - zstandard
 - jupyter_bokeh
 - pykdtree
+- numba>=0.59

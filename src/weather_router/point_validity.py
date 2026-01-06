@@ -8,10 +8,93 @@ import os
 import math
 import geopy
 import geopy.distance
+from numba import njit
 
 
 LAND_BORDER_PAD_CELLS = 100
 
+
+@njit(cache=True, fastmath=True)
+def _dda_cells_clear_core(lsm_arr, lat_origin, lon_origin, dlat, dlon, lat0, lon0, lat1, lon1, land_threshold) -> bool:
+    """
+    Numba-accelerated DDA traversal on a regular grid in (lat,lon) space.
+    lsm_arr: 2D numpy array [lat, lon]
+    Returns False if any intersected cell is land or traversal goes OOB.
+    """
+    nlat = lsm_arr.shape[0]
+    nlon = lsm_arr.shape[1]
+
+    # Map to continuous index space where cell edges are integers.
+    y0 = (float(lat0) - lat_origin) / dlat
+    x0 = (float(lon0) - lon_origin) / dlon
+    y1 = (float(lat1) - lat_origin) / dlat
+    x1 = (float(lon1) - lon_origin) / dlon
+
+    iy = int(math.floor(y0))
+    ix = int(math.floor(x0))
+    end_iy = int(math.floor(y1))
+    end_ix = int(math.floor(x1))
+
+    # Out-of-bounds => treat as land (reject)
+    if ix < 0 or ix >= nlon or iy < 0 or iy >= nlat:
+        return False
+    if end_ix < 0 or end_ix >= nlon or end_iy < 0 or end_iy >= nlat:
+        return False
+
+    if float(lsm_arr[iy, ix]) >= float(land_threshold):
+        return False
+
+    dx = x1 - x0
+    dy = y1 - y0
+
+    if dx == 0.0 and dy == 0.0:
+        return True
+
+    stepx = 0 if dx == 0.0 else (1 if dx > 0.0 else -1)
+    stepy = 0 if dy == 0.0 else (1 if dy > 0.0 else -1)
+
+    inf = 1e30
+    if dx == 0.0:
+        tMaxX = inf
+        tDeltaX = inf
+    else:
+        next_x_boundary = (ix + 1) if stepx > 0 else ix
+        tMaxX = (next_x_boundary - x0) / dx
+        tDeltaX = 1.0 / abs(dx)
+
+    if dy == 0.0:
+        tMaxY = inf
+        tDeltaY = inf
+    else:
+        next_y_boundary = (iy + 1) if stepy > 0 else iy
+        tMaxY = (next_y_boundary - y0) / dy
+        tDeltaY = 1.0 / abs(dy)
+
+    max_iters = int(abs(end_ix - ix) + abs(end_iy - iy) + 10)
+    for _ in range(max_iters):
+        if ix == end_ix and iy == end_iy:
+            return True
+
+        if tMaxX < tMaxY:
+            ix += stepx
+            tMaxX += tDeltaX
+        elif tMaxY < tMaxX:
+            iy += stepy
+            tMaxY += tDeltaY
+        else:
+            # corner hit: step both
+            ix += stepx
+            iy += stepy
+            tMaxX += tDeltaX
+            tMaxY += tDeltaY
+
+        if ix < 0 or ix >= nlon or iy < 0 or iy >= nlat:
+            return False
+        if float(lsm_arr[iy, ix]) >= float(land_threshold):
+            return False
+
+    # If we didn't converge, be conservative.
+    return False
 
 def _pad_with_land_border(lsm: xr.DataArray, pad: int = 1, land_value: float = 1.0) -> xr.DataArray:
     """
@@ -118,79 +201,8 @@ class land_sea_mask():
         Check all grid cells intersected by a straight segment in (lat,lon) space.
         Returns False if any intersected cell is land, or if traversal goes OOB.
         """
-        lat_origin, lon_origin, dlat, dlon, nlat, nlon = self._grid_params()
-
-        # Map to continuous index space where cell edges are integers.
-        y0 = (float(lat0) - lat_origin) / dlat
-        x0 = (float(lon0) - lon_origin) / dlon
-        y1 = (float(lat1) - lat_origin) / dlat
-        x1 = (float(lon1) - lon_origin) / dlon
-
-        iy = int(math.floor(y0))
-        ix = int(math.floor(x0))
-        end_iy = int(math.floor(y1))
-        end_ix = int(math.floor(x1))
-
-        # Out-of-bounds => treat as land (reject)
-        if ix < 0 or ix >= nlon or iy < 0 or iy >= nlat:
-            return False
-        if end_ix < 0 or end_ix >= nlon or end_iy < 0 or end_iy >= nlat:
-            return False
-
-        if self._cell_is_land(iy, ix, land_threshold):
-            return False
-
-        dx = x1 - x0
-        dy = y1 - y0
-
-        if dx == 0.0 and dy == 0.0:
-            return True
-
-        stepx = 0 if dx == 0.0 else (1 if dx > 0.0 else -1)
-        stepy = 0 if dy == 0.0 else (1 if dy > 0.0 else -1)
-
-        inf = float("inf")
-        if dx == 0.0:
-            tMaxX = inf
-            tDeltaX = inf
-        else:
-            next_x_boundary = (ix + 1) if stepx > 0 else ix
-            tMaxX = (next_x_boundary - x0) / dx
-            tDeltaX = 1.0 / abs(dx)
-
-        if dy == 0.0:
-            tMaxY = inf
-            tDeltaY = inf
-        else:
-            next_y_boundary = (iy + 1) if stepy > 0 else iy
-            tMaxY = (next_y_boundary - y0) / dy
-            tDeltaY = 1.0 / abs(dy)
-
-        max_iters = int(abs(end_ix - ix) + abs(end_iy - iy) + 10)
-        for _ in range(max_iters):
-            if ix == end_ix and iy == end_iy:
-                return True
-
-            if tMaxX < tMaxY:
-                ix += stepx
-                tMaxX += tDeltaX
-            elif tMaxY < tMaxX:
-                iy += stepy
-                tMaxY += tDeltaY
-            else:
-                # corner hit: step both
-                ix += stepx
-                iy += stepy
-                tMaxX += tDeltaX
-                tMaxY += tDeltaY
-
-            if ix < 0 or ix >= nlon or iy < 0 or iy >= nlat:
-                return False
-            if self._cell_is_land(iy, ix, land_threshold):
-                return False
-
-        # If we didn't converge, be conservative.
-        return False
+        lat_origin, lon_origin, dlat, dlon, _, _ = self._grid_params()
+        return _dda_cells_clear_core(self.lsm_arr, lat_origin, lon_origin, dlat, dlon, lat0, lon0, lat1, lon1, land_threshold)
 
     def _segment_cells_clear_wrapped(self, lat0: float, lon0: float, lat1: float, lon1: float, land_threshold: float) -> bool:
         """

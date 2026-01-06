@@ -1,4 +1,5 @@
 numpy 
 pandas
 geopy
+numba>=0.59
 xarray

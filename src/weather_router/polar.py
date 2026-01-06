@@ -60,6 +60,14 @@ class Polar:
 		self.tws = list(df.columns)
 		self.twa = list(df.index)
 		self.speedTable = df.to_numpy()
+		# Precompute fast index maps
+		self._twa_step = 5.0
+		self._twa_min = float(self.twa[0]) if len(self.twa) else 0.0
+		self._twa_max = float(self.twa[-1]) if len(self.twa) else 180.0
+		self._tws_min = float(self.tws[0]) if len(self.tws) else 0.0
+		self._tws_max = float(self.tws[-1]) if len(self.tws) else 0.0
+		self._twa_to_index = {float(v): i for i, v in enumerate(self.twa)}
+		self._tws_to_index = {float(v): i for i, v in enumerate(self.tws)}
 
 	def myround_twa(self, x, base=5):
 		x = base * round(x/base)
@@ -70,15 +78,26 @@ class Polar:
 		return x
 
 	def getSpeed (self, tws, twa):
-		# return speed in knots give boat speed (knots) and twa (0-180) deg
-		try:
-			twa_idx = self.twa.index(self.myround_twa(twa))
-			tws_idx = self.tws.index(self.myround_tws(tws))
-			speed = self.speedTable[twa_idx][tws_idx]
-		except:
-			if self.myround_tws(tws) > self.tws[-1]:
-				tws = self.tws[-1]
-				twa_idx = self.twa.index(self.myround_twa(twa))
-				tws_idx = self.tws.index(self.myround_tws(tws))
-				speed = self.speedTable[twa_idx][tws_idx]
-		return speed
+		# return speed in knots given boat wind speed (knots) and twa (0-180) deg
+		# Snap to grid and clamp to known range (upper clamp for tws mirrors original fallback)
+		rtwa = int(round(float(twa) / self._twa_step)) * int(self._twa_step)
+		if rtwa < self._twa_min:
+			rtwa = self._twa_min
+		if rtwa > self._twa_max:
+			rtwa = self._twa_max
+		rtwa = float(rtwa)
+		twa_idx = self._twa_to_index.get(rtwa)
+		if twa_idx is None:
+			raise ValueError(f"TWA {twa} (rounded {rtwa}) not in polar index")
+
+		rtws = int(round(float(tws)))
+		if rtws > self._tws_max:
+			rtws = int(self._tws_max)
+		rtws = float(rtws)
+		tws_idx = self._tws_to_index.get(rtws)
+		if tws_idx is None:
+			# Match previous behavior: only defined fallback was for > max
+			# Other invalid inputs should raise
+			raise ValueError(f"TWS {tws} (rounded {rtws}) not in polar index")
+
+		return self.speedTable[twa_idx][tws_idx]

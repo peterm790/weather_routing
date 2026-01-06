@@ -1,3 +1,4 @@
 zarr
 netcdf4
 pytest
+numba>=0.59
