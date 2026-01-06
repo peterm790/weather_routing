@@ -30,7 +30,8 @@ class weather_router:
             progress_callback=None,
             avoid_land_crossings=False,
             leg_check_spacing_nm: float = 1.0,
-            leg_check_max_samples: int = 25,
+                leg_check_max_samples: int = 25,
+                land_threshold: float = 0.5,
             ):
         """
         weather_router: class
@@ -82,6 +83,8 @@ class weather_router:
                 Must be >= 0.25nm.
             :param leg_check_max_samples: int
                 Maximum number of intermediate samples per candidate leg (performance cap).
+            :param land_threshold: float
+                Fractional land coverage threshold for 'strict' mode leg checks (0.0-1.0).
         """
 
         self.end = False
@@ -134,6 +137,7 @@ class weather_router:
             self.avoid_land_crossings_optimise = self.avoid_land_crossings
         self.leg_check_spacing_nm = float(leg_check_spacing_nm)
         self.leg_check_max_samples = int(leg_check_max_samples)
+        self.land_threshold = float(land_threshold)
 
 
         from . import point_validity
@@ -172,7 +176,7 @@ class weather_router:
             return self._lsm.leg_is_clear(
                 lat0, lon0, heading, distance_nm,
                 mode='strict',
-                land_threshold=0.5,
+                land_threshold=self.land_threshold,
             )
 
         # Step-wise sparse sampling mode
