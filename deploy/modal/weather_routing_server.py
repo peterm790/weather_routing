@@ -2,18 +2,20 @@ import modal
 import io
 import urllib.request
 from typing import Union
+from functools import lru_cache
 
 # Define the image with dependencies
 image = (
     modal.Image.debian_slim()
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20260106_2"}) 
+    .env({"FORCE_BUILD": "20260106_4"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
         "numpy",
         "pandas",
+        "numba",
         "geopy",
         "fsspec",
         "s3fs",
@@ -94,6 +96,7 @@ def get_route(
     import time
     # Import here to ensure they are available in the container
     from weather_router import isochronal_weather_router, polar, point_validity
+    from numba import njit
 
     if freq not in ["1hr", "3hr"]:
         return Response(content="freq must be '1hr' or '3hr'", status_code=400)
@@ -199,13 +202,80 @@ def get_route(
     ds_processed = tws.to_dataset(name='tws')
     ds_processed['twd'] = twd
 
-    # Define wind callback
+    # Fast nearest-index helpers over 1D sorted coords (ascending or descending)
+    lat_vals = ds_processed['lat'].values
+    lon_vals = ds_processed['lon'].values
+    time_vals = ds_processed['time'].values
+    tws_arr = ds_processed['tws'].values  # shape: (time, lat, lon)
+    twd_arr = ds_processed['twd'].values  # shape: (time, lat, lon)
+
+    # Prepare numeric views for Numba-friendly comparisons
+    lat_vals_f64 = lat_vals.astype('float64')
+    lon_vals_f64 = lon_vals.astype('float64')
+    time_vals_ns = time_vals.astype('datetime64[ns]').astype('int64')
+    lat_asc = bool(lat_vals_f64[0] <= lat_vals_f64[-1])
+    lon_asc = bool(lon_vals_f64[0] <= lon_vals_f64[-1])
+    lon_min = float(lon_vals_f64.min())
+    lon_max = float(lon_vals_f64.max())
+
+    @njit(cache=True)
+    def _nearest_index_numba(vals, x, asc):
+        # Binary search insertion point then choose nearest neighbor
+        left = 0
+        right = vals.size
+        if asc:
+            while left < right:
+                mid = (left + right) // 2
+                if vals[mid] < x:
+                    left = mid + 1
+                else:
+                    right = mid
+        else:
+            while left < right:
+                mid = (left + right) // 2
+                if vals[mid] > x:
+                    left = mid + 1
+                else:
+                    right = mid
+        i = left
+        if i == 0:
+            return 0
+        n = vals.size
+        if i >= n:
+            return n - 1
+        dr = abs(vals[i] - x)
+        dl = abs(x - vals[i - 1])
+        return i if dr <= dl else i - 1
+
+    @njit(cache=True)
+    def _wrap_lon_to_domain_numba(lon, lon_min_v, lon_max_v):
+        width = lon_max_v - lon_min_v
+        if width <= 0.0:
+            return lon
+        # normalize by 360 wrap
+        lon_rel = lon - lon_min_v
+        # Python-style modulo works in numba for floats
+        wrapped_rel = lon_rel % 360.0
+        wrapped = lon_min_v + wrapped_rel
+        if wrapped < lon_min_v:
+            wrapped = lon_min_v
+        if wrapped > lon_max_v:
+            wrapped = lon_max_v
+        return wrapped
+
+    @lru_cache(maxsize=16384)
+    def _cached_wind_by_index(ti: int, yi: int, xi: int):
+        return (np.float32(twd_arr[ti, yi, xi]), np.float32(tws_arr[ti, yi, xi]))
+
+    # Define wind callback (nearest-neighbour via integer indexing)
     def get_wind(t, lat, lon):
-        tws_sel = ds_processed.tws.sel(time=t, method='nearest')
-        tws_sel = tws_sel.sel(lat=lat, lon=lon, method='nearest')
-        twd_sel = ds_processed.twd.sel(time=t, method='nearest')
-        twd_sel = twd_sel.sel(lat=lat, lon=lon, method='nearest')
-        return (np.float32(twd_sel.values), np.float32(tws_sel.values))
+        # Convert numpy.datetime64 to int64 ns for numba
+        t_ns = np.int64(np.datetime64(t, 'ns').astype('int64'))
+        ti = int(_nearest_index_numba(time_vals_ns, t_ns, True))
+        yi = int(_nearest_index_numba(lat_vals_f64, float(lat), lat_asc))
+        wl = float(_wrap_lon_to_domain_numba(float(lon), lon_min, lon_max))
+        xi = int(_nearest_index_numba(lon_vals_f64, wl, lon_asc))
+        return _cached_wind_by_index(ti, yi, xi)
 
     # Load Polar
     print('fetching polar')

@@ -552,38 +552,74 @@ class weather_router:
     def prune_equidistant(self, possible):
         """
         Prune points using equidistant spacing approach.
-        Returns the original points closest to equidistant points along the isochrone curve.
+        Selects a subset of the original points whose cumulative distances along the
+        isochrone curve are closest to uniformly spaced targets (in nautical miles).
         """
+        if len(possible) == 0:
+            return np.array([], dtype=object), float("inf")
+
         arr = np.array(possible, dtype=object)
-        df = pd.DataFrame(arr)
-        df['dist_wp'] = self.get_dist_wp(arr)
-        
-        # Get equidistant points along the curve
-        isochrone_points = [(row[0], row[1]) for row in possible]
-        equidistant_points = self.return_equidistant(isochrone_points)
-        
-        # Find closest original points to each equidistant point
-        selected_indices = []
-        for eq_point in equidistant_points:
-            min_dist = float('inf')
-            closest_idx = 0
-            for i, row in enumerate(possible):
-                lat, lon = row[0], row[1]
-                # Calculate distance between original point and equidistant point
-                dist = np.sqrt((lat - eq_point[0])**2 + (lon - eq_point[1])**2)
-                if dist < min_dist:
-                    min_dist = dist
-                    closest_idx = i
-            if closest_idx not in selected_indices:
-                selected_indices.append(closest_idx)
-        
-        # Return selected points and minimum distance to waypoint
-        selected_points = [possible[i] for i in selected_indices]
-        selected_arr = np.array(selected_points, dtype=object)
-        selected_df = pd.DataFrame(selected_arr)
-        selected_df['dist_wp'] = self.get_dist_wp(selected_arr)
-        dist_wp_min = selected_df['dist_wp'].min()
-        
+        if arr.ndim != 2 or arr.shape[1] < 5:
+            raise ValueError("prune_equidistant expected rows like [lat, lon, route, brg, twa].")
+
+        # Extract original indices and coordinates
+        pts = [(float(row[0]), float(row[1]), i) for i, row in enumerate(arr)]
+        if len(pts) < 2:
+            raise ValueError("prune_equidistant(): need at least 2 points to compute spacing.")
+
+        # Order points by unwrapped bearing from the start point to reduce discontinuities at 0/360
+        # Compute angles in radians
+        angles = [math.radians(self.getBearing(self.start_point, (lat, lon))) for (lat, lon, _) in pts]
+        # Circular mean
+        s = sum(math.sin(a) for a in angles)
+        c = sum(math.cos(a) for a in angles)
+        mean_ang = math.atan2(s, c)
+
+        def unwrap_near_mean(a, mean):
+            # Shift a by multiples of 2*pi so it lies within +/-pi of mean
+            while a - mean > math.pi:
+                a -= 2.0 * math.pi
+            while mean - a > math.pi:
+                a += 2.0 * math.pi
+            return a
+
+        unwrapped = [unwrap_near_mean(a, mean_ang) for a in angles]
+        ordered = [p for _, p in sorted(zip(unwrapped, pts), key=lambda t: t[0])]
+
+        # Cumulative geodesic distances (nm) along the ordered polyline
+        cum = [0.0]
+        for i in range(len(ordered) - 1):
+            (lat1, lon1, _), (lat2, lon2, _) = ordered[i], ordered[i + 1]
+            d_nm = _haversine_nm_scalar(lat1, lon1, lat2, lon2)
+            cum.append(cum[-1] + float(d_nm))
+
+        total_len = cum[-1]
+        if not math.isfinite(total_len) or total_len <= 0.0:
+            raise ValueError("prune_equidistant(): degenerate isochrone (zero total length).")
+
+        # Number of desired samples limited by available unique points
+        n_target = min(int(self.n_points), len(ordered))
+        if n_target < 1:
+            raise ValueError("prune_equidistant(): invalid n_points computed.")
+
+        targets = np.linspace(0.0, total_len, n_target)
+        cum_arr = np.asarray(cum, dtype=float)
+
+        # For each target distance, pick the original vertex closest in cumulative distance
+        # Map back to ORIGINAL indices from input 'possible'
+        selected_orig_indices = []
+        for t in targets:
+            idx_along = int(np.argmin(np.abs(cum_arr - t)))
+            orig_idx = ordered[idx_along][2]
+            if len(selected_orig_indices) == 0 or selected_orig_indices[-1] != orig_idx:
+                selected_orig_indices.append(orig_idx)
+
+        if len(selected_orig_indices) == 0:
+            raise ValueError("prune_equidistant(): failed to select any indices.")
+
+        selected_arr = arr[selected_orig_indices]
+        dists_wp = self.get_dist_wp(selected_arr)
+        dist_wp_min = float(np.min(dists_wp)) if len(dists_wp) else float("inf")
         return selected_arr, dist_wp_min
 
     def prune_behind_route_step(self, possible, step, route_points, window_size, behind_threshold_steps=3):
@@ -1069,8 +1105,8 @@ class weather_router:
                 raise ValueError("optimize(): previous_route normalized to empty list; cannot proceed.")
             
             # Calculate spacing constraints from the current isochrones
-            base_spacings = self.calculate_isochrone_spacing(curr_isochrones)
-            spacings = [s * 2 for s in base_spacings]
+            spacings = self.calculate_isochrone_spacing(curr_isochrones)
+            #spacings = [s * 1 for s in base_spacings]
 
             if spacings[0] < self.finish_size:
                 spacings = [self.finish_size] * len(spacings)
