@@ -960,153 +960,179 @@ class weather_router:
         if len(self.time_steps) == 0:
             raise ValueError("optimize() requires non-empty self.time_steps.")
 
-        # Calculate spacing constraints from previous isochrones
-        base_spacings = self.calculate_isochrone_spacing(previous_isochrones)
-        spacings = [s * 2 for s in base_spacings]
+        # Outer loop: repeat passes if equidistant pruning occurred, up to a safety cap
+        max_passes = 5
+        pass_idx = 0
+        curr_route = previous_route
+        curr_isochrones = previous_isochrones
+        while True:
+            # Calculate spacing constraints from the current isochrones
+            base_spacings = self.calculate_isochrone_spacing(curr_isochrones)
+            spacings = [s * 2 for s in base_spacings]
 
-        if spacings[0] < self.finish_size:
-            spacings = [self.finish_size] * len(spacings)
+            if spacings[0] < self.finish_size:
+                spacings = [self.finish_size] * len(spacings)
         
-        # Extract route points for constraint centers.
-        # Common convention: routes include the start point, so they are often 1 longer than isochrones.
-        n_route = len(previous_route)
-        n_iso = len(previous_isochrones)
-        if n_route == n_iso + 1:
-            # Align: isochrone index 0 corresponds to "after the first move" => route[1]
-            aligned_route = previous_route[1:]
-        elif n_route == n_iso:
-            aligned_route = previous_route
-        else:
-            raise ValueError(
-                "optimize() requires len(previous_route) to be either equal to len(previous_isochrones) "
-                "or exactly one longer (to include the start point). "
-                f"Got {n_route} route points vs {n_iso} isochrones."
-            )
-
-        route_points = [(float(point[0]), float(point[1])) for point in aligned_route]
-        if len(route_points) != len(spacings):
-            raise ValueError(
-                "optimize() internal alignment error: expected route_points and spacings to be the same length "
-                f"(got {len(route_points)} route points vs {len(spacings)} spacings)."
-            )
-
-        lat, lon = self.start_point
-        self.optimized_isochrones = []
-        
-        if not self.point_validity(lat, lon):
-            print('start point error')
-            return None
-        
-        # Initial State
-        lats = np.array([lat])
-        lons = np.array([lon])
-        routes = [[self.start_point]]
-        bearings = np.array([self.getBearing((lat, lon), self.end_point)])
-        twas = None
-        
-        # Step 0
-        t0 = self.time_steps[0]
-        possible = self.get_possible_batch_optimized(
-             lats, lons, routes, bearings, t0, 0, route_points, spacings, twas
-        )
-        if len(possible) == 0:
-            raise RuntimeError("Optimization pass produced no valid candidates at step 0.")
-
-        dist_wp = self.get_min_dist_wp(np.array(possible, dtype=object))
-        print('step', 0, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
-        if self.progress_callback:
-            self.progress_callback(0, dist_wp, possible)
-        self.optimized_isochrones.append(possible)
-
-        if dist_wp <= self.finish_size:
-            return self.get_fastest_route(use_optimized=True)
-
-        for step, t in enumerate(self.time_steps[1:], start=1):
-            
-            # Prune
-            window_size = self.optimise_window * 2  # wider window for robustness during optimisation
-
-            possible = self.prune_behind_route_step(
-                possible,
-                step=step,
-                route_points=route_points,
-                window_size=window_size,
-                behind_threshold_steps=3,
-            )
-            if len(possible) == 0:
-                raise RuntimeError(
-                    f"Optimization pass produced no valid candidates at step {step} after step-behind pruning."
+            # Extract route points for constraint centers.
+            # Common convention: routes include the start point, so they are often 1 longer than isochrones.
+            n_route = len(curr_route)
+            n_iso = len(curr_isochrones)
+            if n_route == n_iso + 1:
+                # Align: isochrone index 0 corresponds to "after the first move" => route[1]
+                aligned_route = curr_route[1:]
+            elif n_route == n_iso:
+                aligned_route = curr_route
+            else:
+                raise ValueError(
+                    "optimize() requires len(previous_route) to be either equal to len(previous_isochrones) "
+                    "or exactly one longer (to include the start point). "
+                    f"Got {n_route} route points vs {n_iso} isochrones."
                 )
 
-            # Find the best point (closest to finish) in the current set
-            arr_possible = np.array(possible, dtype=object)
-            dists = self.get_dist_wp(arr_possible)
-            best_idx = np.argmin(dists)
-            best_lat, best_lon = arr_possible[best_idx, 0], arr_possible[best_idx, 1]
+            route_points = [(float(point[0]), float(point[1])) for point in aligned_route]
+            if len(route_points) != len(spacings):
+                raise ValueError(
+                    "optimize() internal alignment error: expected route_points and spacings to be the same length "
+                    f"(got {len(route_points)} route points vs {len(spacings)} spacings)."
+                )
 
-            # Find closest point in previous route within window
-            # We search a window around the current step to handle overtaking/falling behind
-            start_idx = max(0, step - window_size)
-            end_idx = min(len(route_points), step + window_size + 1)
+            lat, lon = self.start_point
+            self.optimized_isochrones = []
+            used_equidistant = False
             
-            min_dist = float('inf')
-            closest_idx = step if step < len(route_points) else len(route_points) - 1 # Default fallback
+            if not self.point_validity(lat, lon):
+                print('start point error')
+                return None
             
-            for i in range(start_idx, end_idx):
-                r_lat, r_lon = route_points[i]
-                dist = geopy.distance.great_circle((r_lat, r_lon), (best_lat, best_lon)).nm
-                if dist < min_dist:
-                    min_dist = dist
-                    closest_idx = i
+            # Initial State
+            lats = np.array([lat])
+            lons = np.array([lon])
+            routes = [[self.start_point]]
+            bearings = np.array([self.getBearing((lat, lon), self.end_point)])
+            twas = None
             
-            # Target a waypoint further ahead to stabilize the bearing during tacking
-            # +5 steps ahead provides a better "general direction" than the immediate next point
-            lookahead_steps = 5
-            target_idx = closest_idx + lookahead_steps
-            
-            # If we are near the end of the previous route, target the final destination
-            if target_idx < len(route_points):
-                waypoint = route_points[target_idx]
-            else:
-                waypoint = self.end_point
-            
-            possible = self.prune_slow(arr_possible, waypoint=waypoint)
-            possible, dist_wp = self.prune_close_together(possible)
-            
-            if len(possible) > self.optimise_n_points:
-                print('pruning in optimise!')
-                original_n_points = self.n_points
-                self.n_points = self.optimise_n_points
-                possible, _ = self.prune_equidistant(possible)
-                self.n_points = original_n_points # a hack must fix
-
-            if len(possible) == 0:
-                raise RuntimeError(f"Optimization pass produced no valid candidates at step {step}.")
-
-            print('step', step, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
-            if self.progress_callback:
-                self.progress_callback(step, dist_wp, possible)
-            self.optimized_isochrones.append(possible)
-            
-            if dist_wp <= self.finish_size:
-                break
-
-            # Next Step
-            arr = np.array(possible, dtype=object)
-            lats = arr[:, 0].astype(float)
-            lons = arr[:, 1].astype(float)
-            routes = list(arr[:, 2])
-            bearings = arr[:, 3].astype(float)
-            twas = arr[:, 4].astype(float)
-            
+            # Step 0
+            t0 = self.time_steps[0]
             possible = self.get_possible_batch_optimized(
-                lats, lons, routes, bearings, t, step, route_points, spacings, twas
+                 lats, lons, routes, bearings, t0, 0, route_points, spacings, twas
             )
-            
             if len(possible) == 0:
-                raise RuntimeError(f"Optimization pass produced no valid candidates after expanding step {step}.")
-                    
-            if step == len(self.time_steps) - 1:
-                break
+                raise RuntimeError("Optimization pass produced no valid candidates at step 0.")
+
+            dist_wp = self.get_min_dist_wp(np.array(possible, dtype=object))
+            print('step', 0, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
+            if self.progress_callback:
+                try:
+                    self.progress_callback(0, dist_wp, possible, pass_idx=pass_idx)
+                except TypeError:
+                    # Backward-compat: older callbacks without pass_idx
+                    self.progress_callback(0, dist_wp, possible)
+            self.optimized_isochrones.append(possible)
+
+            if dist_wp <= self.finish_size:
+                return self.get_fastest_route(use_optimized=True)
+
+            for step, t in enumerate(self.time_steps[1:], start=1):
                 
-        return self.get_fastest_route(use_optimized=True)
+                # Prune
+                window_size = self.optimise_window * 2  # wider window for robustness during optimisation
+
+                possible = self.prune_behind_route_step(
+                    possible,
+                    step=step,
+                    route_points=route_points,
+                    window_size=window_size,
+                    behind_threshold_steps=3,
+                )
+                if len(possible) == 0:
+                    raise RuntimeError(
+                        f"Optimization pass produced no valid candidates at step {step} after step-behind pruning."
+                    )
+
+                # Find the best point (closest to finish) in the current set
+                arr_possible = np.array(possible, dtype=object)
+                dists = self.get_dist_wp(arr_possible)
+                best_idx = np.argmin(dists)
+                best_lat, best_lon = arr_possible[best_idx, 0], arr_possible[best_idx, 1]
+
+                # Find closest point in previous route within window
+                # We search a window around the current step to handle overtaking/falling behind
+                start_idx = max(0, step - window_size)
+                end_idx = min(len(route_points), step + window_size + 1)
+                
+                min_dist = float('inf')
+                closest_idx = step if step < len(route_points) else len(route_points) - 1 # Default fallback
+                
+                for i in range(start_idx, end_idx):
+                    r_lat, r_lon = route_points[i]
+                    dist = geopy.distance.great_circle((r_lat, r_lon), (best_lat, best_lon)).nm
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_idx = i
+                
+                # Target a waypoint further ahead to stabilize the bearing during tacking
+                # +5 steps ahead provides a better "general direction" than the immediate next point
+                lookahead_steps = 5
+                target_idx = closest_idx + lookahead_steps
+                
+                # If we are near the end of the previous route, target the final destination
+                if target_idx < len(route_points):
+                    waypoint = route_points[target_idx]
+                else:
+                    waypoint = self.end_point
+                
+                possible = self.prune_slow(arr_possible, waypoint=waypoint)
+                possible, dist_wp = self.prune_close_together(possible)
+                
+                if len(possible) > self.optimise_n_points:
+                    used_equidistant = True
+                    print('pruning in optimise!')
+                    original_n_points = self.n_points
+                    self.n_points = self.optimise_n_points
+                    possible, _ = self.prune_equidistant(possible)
+                    self.n_points = original_n_points # a hack must fix
+
+                if len(possible) == 0:
+                    raise RuntimeError(f"Optimization pass produced no valid candidates at step {step}.")
+
+                print('step', step, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
+                if self.progress_callback:
+                    try:
+                        self.progress_callback(step, dist_wp, possible, pass_idx=pass_idx)
+                    except TypeError:
+                        self.progress_callback(step, dist_wp, possible)
+                self.optimized_isochrones.append(possible)
+                
+                if dist_wp <= self.finish_size:
+                    break
+                
+                # Next Step
+                arr = np.array(possible, dtype=object)
+                lats = arr[:, 0].astype(float)
+                lons = arr[:, 1].astype(float)
+                routes = list(arr[:, 2])
+                bearings = arr[:, 3].astype(float)
+                twas = arr[:, 4].astype(float)
+                
+                possible = self.get_possible_batch_optimized(
+                    lats, lons, routes, bearings, t, step, route_points, spacings, twas
+                )
+                
+                if len(possible) == 0:
+                    raise RuntimeError(f"Optimization pass produced no valid candidates after expanding step {step}.")
+                        
+                if step == len(self.time_steps) - 1:
+                    break
+            
+            # If we completed a pass without needing equidistant pruning, return the result
+            if not used_equidistant:
+                return self.get_fastest_route(use_optimized=True)
+            
+            # Prepare for next pass using the optimized results
+            pass_idx += 1
+            if pass_idx >= max_passes:
+                raise RuntimeError("optimize(): exceeded max passes without eliminating equidistant pruning")
+            
+            # Feed back optimized isochrones and route as the new constraints
+            curr_isochrones = self.optimized_isochrones
+            curr_route = self.get_fastest_route(stats=False, use_optimized=True)

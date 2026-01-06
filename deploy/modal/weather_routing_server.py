@@ -242,7 +242,7 @@ def get_route(
     print('creating routing queue')
     progress_queue = queue.Queue()
 
-    def progress_callback(step, dist_wp, isochrones):
+    def progress_callback(step, dist_wp, isochrones, pass_idx=None):
         # Simplify isochrones for transport - extract only lat/lon
         # Assuming isochrones is a list of [lat, lon, ...]
         simple_isochrones = []
@@ -255,7 +255,8 @@ def get_route(
             "type": "progress",
             "step": step,
             "dist": float(dist_wp),
-            "isochrones": simple_isochrones
+            "isochrones": simple_isochrones,
+            "pass_idx": pass_idx
         })
 
     weatherrouter = isochronal_weather_router.weather_router(
