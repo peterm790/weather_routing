@@ -945,6 +945,41 @@ class weather_router:
         return df.iloc[:, :5].to_numpy(dtype=object), dist_wp_min
 
 
+    def _normalize_route_points(self, route):
+        """
+        Normalize various route representations into a clean list of (lat, lon) float tuples.
+        - Accepts: list/ndarray of (lat, lon) pairs, possibly mixed with markers like 'dummy'
+                   or a pandas DataFrame with 'lat'/'lon' columns.
+        - Drops any non-numeric or non-2D entries.
+        """
+        cleaned = []
+        try:
+            if isinstance(route, pd.DataFrame):
+                if 'lat' in route.columns and 'lon' in route.columns:
+                    lats = route['lat'].astype(float).tolist()
+                    lons = route['lon'].astype(float).tolist()
+                    cleaned = list(zip(lats, lons))
+                else:
+                    # Fallback: use first two columns if present
+                    if route.shape[1] >= 2:
+                        lats = route.iloc[:, 0].astype(float).tolist()
+                        lons = route.iloc[:, 1].astype(float).tolist()
+                        cleaned = list(zip(lats, lons))
+                    else:
+                        cleaned = []
+            else:
+                for item in list(route) if isinstance(route, (list, tuple, np.ndarray)) else []:
+                    if isinstance(item, (list, tuple, np.ndarray)) and len(item) >= 2:
+                        try:
+                            lat = float(item[0])
+                            lon = float(item[1])
+                            cleaned.append((lat, lon))
+                        except Exception:
+                            continue
+        except Exception:
+            cleaned = []
+        return cleaned
+
     def optimize(self, previous_route, previous_isochrones):
         """
         Run optimization pass using previous route and isochrones to constrain search space.
@@ -970,6 +1005,11 @@ class weather_router:
         curr_route = previous_route
         curr_isochrones = previous_isochrones
         while True:
+            # Sanitize input route for this pass (remove markers like 'dummy', coerce DataFrame, etc.)
+            route_clean = self._normalize_route_points(curr_route)
+            if len(route_clean) == 0:
+                raise ValueError("optimize(): previous_route normalized to empty list; cannot proceed.")
+            
             # Calculate spacing constraints from the current isochrones
             base_spacings = self.calculate_isochrone_spacing(curr_isochrones)
             spacings = [s * 2 for s in base_spacings]
@@ -979,13 +1019,13 @@ class weather_router:
         
             # Extract route points for constraint centers.
             # Common convention: routes include the start point, so they are often 1 longer than isochrones.
-            n_route = len(curr_route)
+            n_route = len(route_clean)
             n_iso = len(curr_isochrones)
             if n_route == n_iso + 1:
                 # Align: isochrone index 0 corresponds to "after the first move" => route[1]
-                aligned_route = curr_route[1:]
+                aligned_route = route_clean[1:]
             elif n_route == n_iso:
-                aligned_route = curr_route
+                aligned_route = route_clean
             else:
                 raise ValueError(
                     "optimize() requires len(previous_route) to be either equal to len(previous_isochrones) "
