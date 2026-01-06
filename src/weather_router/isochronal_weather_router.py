@@ -1099,6 +1099,7 @@ class weather_router:
         curr_route = previous_route
         curr_isochrones = previous_isochrones
         while True:
+            clamped_all_this_pass = False
             # Sanitize input route for this pass (remove markers like 'dummy', coerce DataFrame, etc.)
             route_clean = self._normalize_route_points(curr_route)
             if len(route_clean) == 0:
@@ -1108,9 +1109,10 @@ class weather_router:
             spacings = self.calculate_isochrone_spacing(curr_isochrones)
             #spacings = [s * 1 for s in base_spacings]
 
-            # Clamp on the first optimisation pass only to stabilize; allow adaptation thereafter
-            if pass_idx == 0 and len(spacings) > 0 and spacings[0] < self.finish_size:
+            # Clamp on all passes if any spacing drops below finish_size
+            if len(spacings) > 0 and spacings[0] < self.finish_size:
                 spacings = [self.finish_size] * len(spacings)
+                clamped_all_this_pass = True
         
             # Extract route points for constraint centers.
             # Common convention: routes include the start point, so they are often 1 longer than isochrones.
@@ -1264,7 +1266,7 @@ class weather_router:
                     break
             
             # If we completed a pass without needing equidistant pruning, return the result
-            if not used_equidistant:
+            if not used_equidistant or clamped_all_this_pass:
                 return self.get_fastest_route(use_optimized=True)
             
             # End of pass: emit a preliminary route snapshot before starting next pass
