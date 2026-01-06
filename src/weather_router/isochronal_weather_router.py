@@ -939,7 +939,7 @@ class weather_router:
                 closest_spacing = spacings[min(i, len(spacings) - 1)]
         
         # Use the closest spacing as constraint radius (in nautical miles)
-        constraint_radius = closest_spacing * 1
+        constraint_radius = closest_spacing * 2
         
         return min_distance_to_center <= constraint_radius
 
@@ -1265,6 +1265,16 @@ class weather_router:
             # If we completed a pass without needing equidistant pruning, return the result
             if not used_equidistant:
                 return self.get_fastest_route(use_optimized=True)
+            
+            # End of pass: emit a preliminary route snapshot before starting next pass
+            if self.progress_callback:
+                try:
+                    self.progress_callback(step, dist_wp, possible, pass_idx=pass_idx, emit_prelim=True)
+                except TypeError:
+                    try:
+                        self.progress_callback(step, dist_wp, possible)
+                    except Exception:
+                        pass
             
             # Prepare for next pass using the optimized results
             pass_idx += 1

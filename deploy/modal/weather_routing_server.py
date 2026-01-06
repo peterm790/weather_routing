@@ -9,7 +9,7 @@ image = (
     modal.Image.debian_slim()
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20260106_4"}) 
+    .env({"FORCE_BUILD": "20260106_5"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -52,7 +52,7 @@ def get_route(
     finish_size: float = 5.0,
     optimise_n_points: int = 60,
     optimise_window: int = 24,
-    leg_check_max_samples: int = 25,
+    leg_check_max_samples: int = 10,
     point_validity_method: str = "nearest",
     twa_change_penalty: float = 0.02,
     twa_change_threshold: float = 5.0
@@ -312,7 +312,7 @@ def get_route(
     print('creating routing queue')
     progress_queue = queue.Queue()
 
-    def progress_callback(step, dist_wp, isochrones, pass_idx=None):
+    def progress_callback(step, dist_wp, isochrones, pass_idx=None, emit_prelim=False):
         # Simplify isochrones for transport - extract only lat/lon
         # Assuming isochrones is a list of [lat, lon, ...]
         simple_isochrones = []
@@ -328,6 +328,32 @@ def get_route(
             "isochrones": simple_isochrones,
             "pass_idx": pass_idx
         })
+
+        # If requested, emit a single preliminary route snapshot (end-of-pass)
+        if emit_prelim:
+            try:
+                prelim_route = weatherrouter.get_fastest_route(stats=False, use_optimized=True)
+                if isinstance(prelim_route, list):
+                    prelim_route_data = prelim_route
+                else:
+                    prelim_route_copy = prelim_route.copy()
+                    if 'time' in prelim_route_copy.columns:
+                        prelim_route_copy['time'] = prelim_route_copy['time'].astype(str)
+                    prelim_route_data = prelim_route_copy.to_dict(orient="records")
+                progress_queue.put({
+                    "type": "result",
+                    "preliminary": True,
+                    "pass_idx": pass_idx,
+                    "step": step,
+                    "data": prelim_route_data
+                })
+            except Exception as e:
+                # Surface an explicit error object to the stream; no silent fallbacks
+                progress_queue.put({
+                    "type": "error",
+                    "scope": "preliminary_result_emit",
+                    "message": f"{type(e).__name__}: {str(e)}"
+                })
 
     weatherrouter = isochronal_weather_router.weather_router(
         volvo70_polar,
@@ -465,6 +491,7 @@ def get_route(
             
         result_msg = {
             "type": "result", 
+            "preliminary": False,
             "data": route_data
         }
         yield sse_data(result_msg)
