@@ -6,24 +6,29 @@
 
 Usage:
 
-To configure a suitable enviroment for running a routing I recommend using the supplied enviroment.yaml file to create a clean conda enviroment:
+To configure a suitable environment for running a routing, use `uv` (instead of conda):
 
 ```bash
 git clone https://github.com/peterm790/weather_routing
 cd weather_routing
-conda env create -f environment.yml
-conda activate routing
-pip install -e .
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+uv pip install -e .
 ```
 
-To perform a historical routing using a reanalysis model such as ERA5:
+You can also run scripts without activating the venv:
+
+```bash
+uv run python -c "import weather_router; print(weather_router.__file__)"
+```
+
+To perform a routing using the same dynamical forecast data source as the Modal deployment (GFS on data.dynamical.org):
 
 - First import packages:
 
 ```python
-import intake
 import xarray as xr
-import zarr
 import numpy as np
 
 from weather_router import isochronal_weather_router, polar, point_validity, visualize
@@ -33,20 +38,23 @@ from weather_router import isochronal_weather_router, polar, point_validity, vis
 
 ```python
 ds = xr.open_zarr(
-    'gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3',
-    chunks=None,
-    storage_options=dict(token='anon'),
+    "https://data.dynamical.org/noaa/gfs/forecast/latest.zarr",
+    decode_timedelta=True,
 )
 ds = ds.rename({'latitude':'lat', 'longitude':'lon'})
-ds = ds[['10m_u_component_of_wind', '10m_v_component_of_wind']]
+ds = ds[['wind_u_10m', 'wind_v_10m']]
 
-ds.coords['lon'] = ((ds.coords['lon'] + 180) % 360) - 180
-ds = ds.sortby(ds.lon)
-ds = ds.sel(lat = slice(40,35)).sel(lon = slice(-7,4))
-ds = ds.sel(time0= slice('2022-01-13T12:00:00', '2022-01-20T12:00:00'))
+# Subset the forecast domain and time window
+ds = ds.sel(lat=slice(40, 35)).sel(lon=slice(-7, 4))
+ds = ds.isel(init_time=-1)  # latest forecast init
+ds = ds.isel(lead_time=slice(0, 120))  # first 120 lead times
 
-u10 = ds.10m_u_component_of_wind
-v10 = ds.10m_v_component_of_wind
+# Promote lead_time to a real time coordinate
+ds = ds.assign_coords(time=ds.init_time + ds.lead_time)
+ds = ds.swap_dims({'lead_time': 'time'})
+
+u10 = ds.wind_u_10m
+v10 = ds.wind_v_10m
 tws = np.sqrt(v10**2 + u10**2)
 tws = tws*1.94384 #convert m/s to knots
 twd = np.mod(180+np.rad2deg(np.arctan2(u10, v10)),360)
