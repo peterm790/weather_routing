@@ -86,6 +86,32 @@ def _haversine_nm_scalar(lat1, lon1, lat2, lon2) -> float:
     return _R_EARTH_NM * c
 
 @njit(cache=True, fastmath=True)
+def _polar_speed_numba(tws, twa, speed_table, tws_max, twa_step, twa_max):
+    """
+    Fast polar lookup mirroring Polar.getSpeed rounding/clamping.
+    - tws rounded to nearest int and clamped to tws_max
+    - twa rounded to nearest twa_step and clamped to [0, twa_max]
+    """
+    # TWA rounding/clamp
+    step = float(twa_step)
+    rtwa = int(round(float(twa) / step)) * step
+    if rtwa < 0.0:
+        rtwa = 0.0
+    if rtwa > twa_max:
+        rtwa = twa_max
+    twa_idx = int(round(rtwa / step))
+
+    # TWS rounding/clamp
+    rtws = int(round(float(tws)))
+    if rtws > int(tws_max):
+        rtws = int(tws_max)
+    if rtws < 0:
+        rtws = 0
+    tws_idx = rtws
+
+    return speed_table[twa_idx][tws_idx]
+
+@njit(cache=True, fastmath=True)
 def _leg_finish_intersection_numba(
     lat0: float,
     lon0: float,
@@ -271,6 +297,11 @@ class weather_router:
         self.optimise_n_points = optimise_n_points if optimise_n_points is not None else n_points * 2
         self.optimise_window = optimise_window
         self.progress_callback = progress_callback
+        # Fast polar lookup params for Numba
+        self._polar_speed_table = self.polar.speedTable
+        self._polar_tws_max = float(self.polar._tws_max)
+        self._polar_twa_step = float(self.polar._twa_step)
+        self._polar_twa_max = float(self.polar._twa_max)
 
         if leg_check_spacing_nm < 0.25:
             raise ValueError("leg_check_spacing_nm must be >= 0.25 (nautical miles)")
@@ -731,7 +762,14 @@ class weather_router:
         for heading in range(lower, upper, 10):
             heading = ((int(heading) + 360) % 360)
             twa = self.getTWA_from_heading(heading, twd)
-            speed = self.polar.getSpeed(tws, np.abs(twa))
+            speed = _polar_speed_numba(
+                tws,
+                abs(twa),
+                self._polar_speed_table,
+                self._polar_tws_max,
+                self._polar_twa_step,
+                self._polar_twa_max,
+            )
 
             # Apply tack penalty if tacking
             if self.is_tacking(twa, previous_twa):
@@ -993,7 +1031,14 @@ class weather_router:
         for heading in range(lower, upper, 10):
             heading = ((int(heading) + 360) % 360)
             twa = self.getTWA_from_heading(heading, twd)
-            speed = self.polar.getSpeed(tws, np.abs(twa))
+            speed = _polar_speed_numba(
+                tws,
+                abs(twa),
+                self._polar_speed_table,
+                self._polar_tws_max,
+                self._polar_twa_step,
+                self._polar_twa_max,
+            )
             
             # Apply tack penalty if tacking
             if self.is_tacking(twa, previous_twa):

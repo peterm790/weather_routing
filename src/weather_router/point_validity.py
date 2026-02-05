@@ -6,12 +6,46 @@ point validity is the slowest portion of the code"""
 import xarray as xr
 import os
 import math
-import geopy
-import geopy.distance
 from numba import njit
 
 
 LAND_BORDER_PAD_CELLS = 100
+_R_EARTH_NM = 3440.065
+
+
+@njit(cache=True, fastmath=True)
+def _wrap_lon180(lon_deg: float) -> float:
+    return (float(lon_deg) + 180.0) % 360.0 - 180.0
+
+
+@njit(cache=True, fastmath=True)
+def _gc_destination(lat_deg: float, lon_deg: float, bearing_deg: float, distance_nm: float):
+    """
+    Great-circle destination on a sphere, returning (lat, lon) in degrees.
+    """
+    if distance_nm == 0.0:
+        return float(lat_deg), _wrap_lon180(float(lon_deg))
+    lat1 = math.radians(float(lat_deg))
+    lon1 = math.radians(float(lon_deg))
+    theta = math.radians((float(bearing_deg) % 360.0))
+    delta = float(distance_nm) / _R_EARTH_NM
+
+    sin_lat1 = math.sin(lat1)
+    cos_lat1 = math.cos(lat1)
+    sin_delta = math.sin(delta)
+    cos_delta = math.cos(delta)
+    sin_theta = math.sin(theta)
+    cos_theta = math.cos(theta)
+
+    sin_lat2 = sin_lat1 * cos_delta + cos_lat1 * sin_delta * cos_theta
+    sin_lat2 = max(-1.0, min(1.0, sin_lat2))
+    lat2 = math.asin(sin_lat2)
+
+    y = sin_theta * sin_delta * cos_lat1
+    x = cos_delta - sin_lat1 * math.sin(lat2)
+    lon2 = lon1 + math.atan2(y, x)
+
+    return math.degrees(lat2), _wrap_lon180(math.degrees(lon2))
 
 
 @njit(cache=True, fastmath=True)
@@ -297,8 +331,8 @@ class land_sea_mask():
         pts = []
         for k in range(n_steps + 1):
             d = distance_nm * (k / n_steps)
-            p = geopy.distance.great_circle(nautical=d).destination((lat0, lon0), heading_deg)
-            pts.append((float(p.latitude), self._wrap_lon(float(p.longitude))))
+            lat_p, lon_p = _gc_destination(lat0, lon0, heading_deg, float(d))
+            pts.append((float(lat_p), float(lon_p)))
 
         for (a_lat, a_lon), (b_lat, b_lon) in zip(pts[:-1], pts[1:]):
             if not self._segment_cells_clear_wrapped(a_lat, a_lon, b_lat, b_lon, land_threshold):
@@ -353,8 +387,8 @@ class land_sea_mask():
             sample_distances = [(distance_nm * i / n_intervals) for i in range(1, n_intervals)]
 
         for d in sample_distances:
-            p = geopy.distance.great_circle(nautical=d).destination((lat0, lon0), heading_deg)
-            if not self.point_validity(p.latitude, p.longitude):
+            lat_p, lon_p = _gc_destination(lat0, lon0, heading_deg, float(d))
+            if not self.point_validity(lat_p, lon_p):
                 return False
         return True
 
@@ -387,8 +421,8 @@ class land_sea_mask():
         if not self.point_validity(lat0, lon0):
             return False
 
-        end_point = geopy.distance.great_circle(nautical=distance_nm).destination((lat0, lon0), heading_deg)
-        return self.point_validity(float(end_point.latitude), float(end_point.longitude))
+        lat_p, lon_p = _gc_destination(lat0, lon0, heading_deg, float(distance_nm))
+        return self.point_validity(float(lat_p), float(lon_p))
 
     def leg_is_clear(
         self,
@@ -434,6 +468,3 @@ class land_sea_mask():
         if self.method == 'nearest':
             # method = nearest is problematic at low resolutions
             return self.lsm.sel(latitude = lat,longitude = lon, method = 'nearest').values <= 0.1
-
-
-
