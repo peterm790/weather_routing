@@ -10,3 +10,4 @@ requests
 netcdf4
 scipy
 matplotlib
+cartopy

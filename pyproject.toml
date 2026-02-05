@@ -23,6 +23,7 @@ dependencies = [
     "netcdf4",
     "scipy",
     "matplotlib",
+    "cartopy",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

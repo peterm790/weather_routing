@@ -172,10 +172,10 @@ cache.zarr/
 *.zarr/
 *.nc
 bokeh_plot.png
-demo_timing.md
-demo_timing.csv
-demo_route.png
-cache/demo_gfs_*.zarr/
+version_benchmark.md
+version_benchmark.csv
+version_benchmark.png
+cache/version_benchmark_gfs_*.zarr/
 
 # Data files (uncomment if you don't want to track data)
 # *.h5

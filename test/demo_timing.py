@@ -216,7 +216,7 @@ def main() -> int:
     polar_file = "volvo70"
     init_time_index = 6964
     lead_time_hours = 48
-    cache_path = repo_root / "cache" / "demo_gfs_2024-07-10T20Z.zarr"
+    cache_path = repo_root / "cache" / "version_benchmark_gfs_2024-07-10T20Z.zarr"
 
     start = time.perf_counter()
     ds_processed = _load_weather(
@@ -316,9 +316,9 @@ def main() -> int:
 
     init_time = ds_processed.time.values[0]
     timestamp_utc = datetime.now(timezone.utc).isoformat()
-    report_path = repo_root / "demo_timing.md"
-    csv_path = repo_root / "demo_timing.csv"
-    map_path = repo_root / "demo_route.png"
+    report_path = repo_root / "version_benchmark.md"
+    csv_path = repo_root / "version_benchmark.csv"
+    map_path = repo_root / "version_benchmark.png"
 
     headers = [
         "timestamp_utc",
@@ -363,17 +363,39 @@ def main() -> int:
     _append_csv(csv_path, headers, values)
 
     try:
+        import cartopy.crs as ccrs
+        import cartopy.feature as cfeature
         import matplotlib.pyplot as plt
 
-        plt.figure(figsize=(6, 6))
-        plt.plot(route_df["lon"], route_df["lat"], "-k", linewidth=2)
-        plt.scatter([Gibraltar[1], Palma[1]], [Gibraltar[0], Palma[0]], c=["red", "green"], s=30)
-        plt.xlabel("Longitude")
-        plt.ylabel("Latitude")
-        plt.title("Weather Routing Demo")
+        fig = plt.figure(figsize=(7, 6))
+        ax = plt.axes(projection=ccrs.Mercator())
+        ax.set_extent([min_lon, max_lon, min_lat, max_lat], crs=ccrs.PlateCarree())
+
+        ax.add_feature(cfeature.LAND, facecolor="#f2efe9")
+        ax.add_feature(cfeature.OCEAN, facecolor="#d7e7f3")
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.8)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.4, linestyle=":")
+
+        ax.plot(
+            route_df["lon"],
+            route_df["lat"],
+            transform=ccrs.PlateCarree(),
+            color="black",
+            linewidth=2,
+        )
+        ax.scatter(
+            [Gibraltar[1], Palma[1]],
+            [Gibraltar[0], Palma[0]],
+            transform=ccrs.PlateCarree(),
+            c=["red", "green"],
+            s=30,
+            zorder=5,
+        )
+
+        ax.set_title("Weather Routing Benchmark")
         plt.tight_layout()
         plt.savefig(map_path, dpi=150)
-        plt.close()
+        plt.close(fig)
     except Exception as exc:
         print(f"Map render failed: {exc}", file=sys.stderr)
 
