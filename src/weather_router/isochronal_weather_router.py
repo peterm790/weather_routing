@@ -5,111 +5,14 @@ import geopy
 import geopy.distance
 from numba import njit
 
-
-# Fast spherical geometry helpers (nautical miles)
-_R_EARTH_NM = 3440.065
-
-@njit(cache=True, fastmath=True)
-def _wrap_lon180(lon_deg: float) -> float:
-    return (float(lon_deg) + 180.0) % 360.0 - 180.0
-
-@njit(cache=True, fastmath=True)
-def _bearing_deg_numba(lat1_deg: float, lon1_deg: float, lat2_deg: float, lon2_deg: float) -> float:
-    lat1 = math.radians(lat1_deg)
-    lat2 = math.radians(lat2_deg)
-    diffLong = math.radians(lon2_deg - lon1_deg)
-    x = math.sin(diffLong) * math.cos(lat2)
-    y = math.cos(lat1) * math.sin(lat2) - (math.sin(lat1) * math.cos(lat2) * math.cos(diffLong))
-    initial_bearing = math.atan2(x, y)
-    brg = (math.degrees(initial_bearing) + 360.0) % 360.0
-    return brg
-
-@njit(cache=True, fastmath=True)
-def _gc_destination(lat_deg: float, lon_deg: float, bearing_deg: float, distance_nm: float):
-    """
-    Great-circle destination on a sphere, returning (lat, lon) in degrees.
-    """
-    if distance_nm == 0.0:
-        return float(lat_deg), _wrap_lon180(float(lon_deg))
-    lat1 = math.radians(float(lat_deg))
-    lon1 = math.radians(float(lon_deg))
-    theta = math.radians((float(bearing_deg) % 360.0))
-    delta = float(distance_nm) / _R_EARTH_NM
-
-    sin_lat1 = math.sin(lat1)
-    cos_lat1 = math.cos(lat1)
-    sin_delta = math.sin(delta)
-    cos_delta = math.cos(delta)
-    sin_theta = math.sin(theta)
-    cos_theta = math.cos(theta)
-
-    sin_lat2 = sin_lat1 * cos_delta + cos_lat1 * sin_delta * cos_theta
-    # Clamp for numerical safety
-    sin_lat2 = max(-1.0, min(1.0, sin_lat2))
-    lat2 = math.asin(sin_lat2)
-
-    y = sin_theta * sin_delta * cos_lat1
-    x = cos_delta - sin_lat1 * math.sin(lat2)
-    lon2 = lon1 + math.atan2(y, x)
-
-    return math.degrees(lat2), _wrap_lon180(math.degrees(lon2))
-
-@njit(cache=True, fastmath=True)
-def _haversine_nm_vec(lat1_arr, lon1_arr, lat2, lon2):
-    """
-    Vectorized haversine distance (nm) from arrays lat1/lon1 to a single lat2/lon2.
-    Accepts numpy arrays or array-likes for lat1_arr/lon1_arr.
-    """
-    lat1 = np.radians(np.asarray(lat1_arr, dtype=np.float64))
-    lon1 = np.radians(np.asarray(lon1_arr, dtype=np.float64))
-    lat2r = math.radians(float(lat2))
-    lon2r = math.radians(float(lon2))
-    dlat = lat2r - lat1
-    dlon = lon2r - lon1
-    a = np.sin(dlat / 2.0) ** 2 + np.cos(lat1) * math.cos(lat2r) * np.sin(dlon / 2.0) ** 2
-    c = 2.0 * np.arctan2(np.sqrt(a), np.sqrt(1.0 - a))
-    return _R_EARTH_NM * c
-
-@njit(cache=True, fastmath=True)
-def _haversine_nm_scalar(lat1, lon1, lat2, lon2) -> float:
-    """
-    Scalar haversine distance (nm).
-    """
-    lat1r = math.radians(float(lat1))
-    lon1r = math.radians(float(lon1))
-    lat2r = math.radians(float(lat2))
-    lon2r = math.radians(float(lon2))
-    dlat = lat2r - lat1r
-    dlon = lon2r - lon1r
-    a = math.sin(dlat / 2.0) ** 2 + math.cos(lat1r) * math.cos(lat2r) * math.sin(dlon / 2.0) ** 2
-    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
-    return _R_EARTH_NM * c
-
-@njit(cache=True, fastmath=True)
-def _polar_speed_numba(tws, twa, speed_table, tws_max, twa_step, twa_max):
-    """
-    Fast polar lookup mirroring Polar.getSpeed rounding/clamping.
-    - tws rounded to nearest int and clamped to tws_max
-    - twa rounded to nearest twa_step and clamped to [0, twa_max]
-    """
-    # TWA rounding/clamp
-    step = float(twa_step)
-    rtwa = int(round(float(twa) / step)) * step
-    if rtwa < 0.0:
-        rtwa = 0.0
-    if rtwa > twa_max:
-        rtwa = twa_max
-    twa_idx = int(round(rtwa / step))
-
-    # TWS rounding/clamp
-    rtws = int(round(float(tws)))
-    if rtws > int(tws_max):
-        rtws = int(tws_max)
-    if rtws < 0:
-        rtws = 0
-    tws_idx = rtws
-
-    return speed_table[twa_idx][tws_idx]
+from .utils_geo import (
+    _R_EARTH_NM,
+    bearing_deg,
+    gc_destination,
+    haversine_nm_vec,
+    haversine_nm_scalar,
+)
+from .utils_numba import polar_speed
 
 @njit(cache=True, fastmath=True)
 def _leg_finish_intersection_numba(
@@ -130,7 +33,7 @@ def _leg_finish_intersection_numba(
         return False, 0.0, 0.0, 0.0
 
     # Great-circle distance from start to finish center (nm)
-    dist_to_center_nm = _haversine_nm_scalar(lat0, lon0, finish_lat, finish_lon)
+    dist_to_center_nm = haversine_nm_scalar(lat0, lon0, finish_lat, finish_lon)
 
     # Already inside finish circle
     if dist_to_center_nm <= finish_size_nm:
@@ -147,7 +50,7 @@ def _leg_finish_intersection_numba(
 
     # Bearings (radians)
     theta12 = math.radians(heading_deg % 360.0)
-    theta13 = math.radians(_bearing_deg_numba(lat0, lon0, finish_lat, finish_lon))
+    theta13 = math.radians(bearing_deg(lat0, lon0, finish_lat, finish_lon))
 
     xt_arg = math.sin(delta13) * math.sin(theta13 - theta12)
     if xt_arg < -1.0:
@@ -193,7 +96,7 @@ def _leg_finish_intersection_numba(
         return False, 0.0, 0.0, 0.0
 
     hit_distance_nm = delta_hit * _R_EARTH_NM
-    hit_lat, hit_lon = _gc_destination(lat0, lon0, heading_deg, hit_distance_nm)
+    hit_lat, hit_lon = gc_destination(lat0, lon0, heading_deg, hit_distance_nm)
     return True, hit_lat, hit_lon, hit_distance_nm
 
 class weather_router:
@@ -386,17 +289,17 @@ class weather_router:
     def get_min_dist_wp(self, isochrones):
         lats = isochrones[:, 0].astype(float)
         lons = isochrones[:, 1].astype(float)
-        d = _haversine_nm_vec(lats, lons, self.end_point[0], self.end_point[1])
+        d = haversine_nm_vec(lats, lons, self.end_point[0], self.end_point[1])
         return float(np.min(d))
 
     def get_dist_wp(self, isochrones):
         lats = np.asarray(isochrones)[:, 0].astype(float)
         lons = np.asarray(isochrones)[:, 1].astype(float)
-        d = _haversine_nm_vec(lats, lons, self.end_point[0], self.end_point[1])
+        d = haversine_nm_vec(lats, lons, self.end_point[0], self.end_point[1])
         return d.tolist()
 
     def getBearing(self, pointA, pointB):
-        return _bearing_deg_numba(float(pointA[0]), float(pointA[1]), float(pointB[0]), float(pointB[1]))
+        return bearing_deg(float(pointA[0]), float(pointA[1]), float(pointB[0]), float(pointB[1]))
 
     def get_average_bearing(self, b1, b2):
         """
@@ -648,7 +551,7 @@ class weather_router:
         cum = [0.0]
         for i in range(len(ordered) - 1):
             (lat1, lon1, _), (lat2, lon2, _) = ordered[i], ordered[i + 1]
-            d_nm = _haversine_nm_scalar(lat1, lon1, lat2, lon2)
+            d_nm = haversine_nm_scalar(lat1, lon1, lat2, lon2)
             cum.append(cum[-1] + float(d_nm))
 
         total_len = cum[-1]
@@ -754,7 +657,7 @@ class weather_router:
         possible = []
         twd, tws = self.get_wind(t, lat_init, lon_init)
         # Distance to finish center (nm) used for a quick necessary-condition check
-        dist_to_finish = _haversine_nm_scalar(lat_init, lon_init, self.end_point[0], self.end_point[1])
+        dist_to_finish = haversine_nm_scalar(lat_init, lon_init, self.end_point[0], self.end_point[1])
 
         upper = int(bearing_end) + self.spread
         lower = int(bearing_end) - self.spread
@@ -762,7 +665,7 @@ class weather_router:
         for heading in range(lower, upper, 10):
             heading = ((int(heading) + 360) % 360)
             twa = self.getTWA_from_heading(heading, twd)
-            speed = _polar_speed_numba(
+            speed = polar_speed(
                 tws,
                 abs(twa),
                 self._polar_speed_table,
@@ -775,7 +678,7 @@ class weather_router:
             if self.is_tacking(twa, previous_twa):
                 speed = speed * (1.0 - self.tack_penalty)
             
-            lat, lon = _gc_destination(lat_init, lon_init, heading, speed * self.step)
+            lat, lon = gc_destination(lat_init, lon_init, heading, speed * self.step)
 
             route = route[:-1]
             route.append((lat, lon))
@@ -1022,7 +925,7 @@ class weather_router:
         twd, tws = self.get_wind(t, lat_init, lon_init)
         
         # Distance to finish center (nm) used for a quick necessary-condition check
-        dist_to_finish = _haversine_nm_scalar(lat_init, lon_init, self.end_point[0], self.end_point[1])
+        dist_to_finish = haversine_nm_scalar(lat_init, lon_init, self.end_point[0], self.end_point[1])
 
         upper = int(bearing_end) + self.spread
         lower = int(bearing_end) - self.spread
@@ -1031,7 +934,7 @@ class weather_router:
         for heading in range(lower, upper, 10):
             heading = ((int(heading) + 360) % 360)
             twa = self.getTWA_from_heading(heading, twd)
-            speed = _polar_speed_numba(
+            speed = polar_speed(
                 tws,
                 abs(twa),
                 self._polar_speed_table,
@@ -1046,7 +949,7 @@ class weather_router:
             elif self.is_twa_change(twa, previous_twa):
                 speed = speed * (1.0 - self.twa_change_penalty)
             
-            lat, lon = _gc_destination(lat_init, lon_init, heading, speed * self.step)
+            lat, lon = gc_destination(lat_init, lon_init, heading, speed * self.step)
 
             route = route[:-1]
             route.append((lat, lon))

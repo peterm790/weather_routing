@@ -275,7 +275,7 @@ def main() -> int:
         end_point=Palma,
         point_validity_extent=[min_lat, min_lon, max_lat, max_lon],
         point_validity_file=ds_lsm,
-        avoid_land_crossings="step",
+        avoid_land_crossings="strict",
         leg_check_spacing_nm=2.0,
         spread=140,
         wake_lim=35,

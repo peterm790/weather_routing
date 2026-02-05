@@ -7,4 +7,5 @@
 - Always run the benchmark after any code change that could affect performance or routing.
 - Attempted to avoid per-heading route list copies in `get_possible`/`get_possible_optimized`; no meaningful improvement, reverted.
 - Attempted a fast Numba-based `get_wind` in the benchmark script; no meaningful improvement, reverted.
+- Benchmark now runs with `avoid_land_crossings="strict"` for land checks.
 </INSTRUCTIONS>
