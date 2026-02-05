@@ -85,6 +85,91 @@ def _haversine_nm_scalar(lat1, lon1, lat2, lon2) -> float:
     c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
     return _R_EARTH_NM * c
 
+@njit(cache=True, fastmath=True)
+def _leg_finish_intersection_numba(
+    lat0: float,
+    lon0: float,
+    heading_deg: float,
+    leg_distance_nm: float,
+    finish_lat: float,
+    finish_lon: float,
+    finish_size_nm: float,
+):
+    """
+    Numba-accelerated finish-circle intersection.
+    Returns (intersects, hit_lat, hit_lon, hit_distance_nm).
+    If no hit, intersects=False and hit_* values are 0.0.
+    """
+    if leg_distance_nm < 0.0 or finish_size_nm <= 0.0:
+        return False, 0.0, 0.0, 0.0
+
+    # Great-circle distance from start to finish center (nm)
+    dist_to_center_nm = _haversine_nm_scalar(lat0, lon0, finish_lat, finish_lon)
+
+    # Already inside finish circle
+    if dist_to_center_nm <= finish_size_nm:
+        return True, lat0, lon0, 0.0
+
+    # Quick necessary condition: to hit a circle of radius R, the center must be within L+R
+    if dist_to_center_nm > leg_distance_nm + finish_size_nm:
+        return False, 0.0, 0.0, 0.0
+
+    # Convert to angular distances (radians)
+    delta13 = dist_to_center_nm / _R_EARTH_NM
+    delta12 = leg_distance_nm / _R_EARTH_NM
+    deltaR = finish_size_nm / _R_EARTH_NM
+
+    # Bearings (radians)
+    theta12 = math.radians(heading_deg % 360.0)
+    theta13 = math.radians(_bearing_deg_numba(lat0, lon0, finish_lat, finish_lon))
+
+    xt_arg = math.sin(delta13) * math.sin(theta13 - theta12)
+    if xt_arg < -1.0:
+        xt_arg = -1.0
+    if xt_arg > 1.0:
+        xt_arg = 1.0
+    delta_xt = math.asin(xt_arg)
+
+    if abs(delta_xt) > deltaR:
+        return False, 0.0, 0.0, 0.0
+
+    delta_at = math.atan2(
+        math.sin(delta13) * math.cos(theta13 - theta12),
+        math.cos(delta13),
+    )
+
+    cos_delta_xt = math.cos(delta_xt)
+    if cos_delta_xt == 0.0:
+        return False, 0.0, 0.0, 0.0
+
+    h_arg = math.cos(deltaR) / cos_delta_xt
+    if h_arg < -1.0:
+        h_arg = -1.0
+    if h_arg > 1.0:
+        h_arg = 1.0
+    delta_h = math.acos(h_arg)
+
+    delta_i1 = delta_at - delta_h
+    delta_i2 = delta_at + delta_h
+
+    # Pick the first intersection within the segment [0, delta12]
+    hit = False
+    delta_hit = 0.0
+    if 0.0 <= delta_i1 <= delta12:
+        hit = True
+        delta_hit = delta_i1
+    if 0.0 <= delta_i2 <= delta12:
+        if not hit or delta_i2 < delta_hit:
+            hit = True
+            delta_hit = delta_i2
+
+    if not hit:
+        return False, 0.0, 0.0, 0.0
+
+    hit_distance_nm = delta_hit * _R_EARTH_NM
+    hit_lat, hit_lon = _gc_destination(lat0, lon0, heading_deg, hit_distance_nm)
+    return True, hit_lat, hit_lon, hit_distance_nm
+
 class weather_router:
     def __init__(
                 self,
@@ -326,77 +411,19 @@ class weather_router:
             raise ValueError("leg_finish_intersection(): leg_distance_nm must be >= 0.")
         if self.finish_size <= 0:
             raise ValueError("leg_finish_intersection(): finish_size must be > 0.")
-
         finish_lat, finish_lon = self.end_point
-        # Great-circle distance from start to finish center (nm)
-        dist_to_center_nm = geopy.distance.great_circle((lat0, lon0), (finish_lat, finish_lon)).nm
-
-        # Already inside finish circle
-        if dist_to_center_nm <= self.finish_size:
-            return True, lat0, lon0, 0.0
-
-        # Quick necessary condition: to hit a circle of radius R, the center must be within L+R
-        if dist_to_center_nm > leg_distance_nm + self.finish_size:
-            return False, None, None, None
-
-        # Spherical navigation (Earth radius in nautical miles)
-        R_earth_nm = 3440.065
-
-        # Convert to angular distances (radians)
-        delta13 = dist_to_center_nm / R_earth_nm
-        delta12 = leg_distance_nm / R_earth_nm
-        deltaR = self.finish_size / R_earth_nm
-
-        # Bearings (radians)
-        theta12 = math.radians(heading_deg % 360.0)
-        theta13 = math.radians(self.getBearing((lat0, lon0), (finish_lat, finish_lon)))
-
-        # Cross-track angular distance to the infinite great-circle path
-        # δxt = asin( sin(δ13) * sin(θ13-θ12) )
-        xt_arg = math.sin(delta13) * math.sin(theta13 - theta12)
-        # Clamp for numerical stability
-        xt_arg = max(-1.0, min(1.0, xt_arg))
-        delta_xt = math.asin(xt_arg)
-
-        if abs(delta_xt) > deltaR:
-            return False, None, None, None
-
-        # Along-track angular distance to closest approach (signed)
-        # δat = atan2( sin(δ13)*cos(θ13-θ12), cos(δ13) )
-        delta_at = math.atan2(
-            math.sin(delta13) * math.cos(theta13 - theta12),
-            math.cos(delta13),
+        intersects, hit_lat, hit_lon, hit_distance_nm = _leg_finish_intersection_numba(
+            lat0,
+            lon0,
+            heading_deg,
+            leg_distance_nm,
+            float(finish_lat),
+            float(finish_lon),
+            float(self.finish_size),
         )
 
-        # If closest approach is behind the start, the segment can't intersect going forward,
-        # except for the "already inside" case handled above.
-        # We still allow intersection if the circle extends forward across the start, which
-        # would imply delta_at + delta_h >= 0; handle below.
-
-        # Half-chord angular distance from closest approach to intersection points
-        # δh = acos( cos(δR) / cos(δxt) )
-        cos_delta_xt = math.cos(delta_xt)
-        if cos_delta_xt == 0.0:
-            # Path is 90deg from center at closest approach; only intersects if deltaR == pi/2,
-            # which cannot happen for realistic finish radii.
+        if not intersects:
             return False, None, None, None
-
-        h_arg = math.cos(deltaR) / cos_delta_xt
-        h_arg = max(-1.0, min(1.0, h_arg))
-        delta_h = math.acos(h_arg)
-
-        # Intersection distances along track (radians), in forward direction
-        delta_i1 = delta_at - delta_h
-        delta_i2 = delta_at + delta_h
-
-        # Pick the first intersection within the segment [0, delta12]
-        candidates = [d for d in (delta_i1, delta_i2) if 0.0 <= d <= delta12]
-        if not candidates:
-            return False, None, None, None
-
-        delta_hit = min(candidates)
-        hit_distance_nm = delta_hit * R_earth_nm
-        hit_lat, hit_lon = _gc_destination(lat0, lon0, heading_deg, hit_distance_nm)
         return True, hit_lat, hit_lon, hit_distance_nm
 
     def is_tacking(self, current_twa, previous_twa):
@@ -721,8 +748,14 @@ class weather_router:
             # Heading-aware finish-circle intersection:
             # Only attempt the more expensive intersection math if the finish circle is reachable in principle.
             if dist_to_finish <= leg_distance_nm + self.finish_size:
-                intersects, hit_lat, hit_lon, hit_dist_nm = self.leg_finish_intersection(
-                    lat_init, lon_init, heading, leg_distance_nm
+                intersects, hit_lat, hit_lon, hit_dist_nm = _leg_finish_intersection_numba(
+                    float(lat_init),
+                    float(lon_init),
+                    float(heading),
+                    float(leg_distance_nm),
+                    float(self.end_point[0]),
+                    float(self.end_point[1]),
+                    float(self.finish_size),
                 )
                 if intersects:
                     lat, lon = hit_lat, hit_lon
@@ -903,7 +936,7 @@ class weather_router:
             # Calculate cumulative distances using geographical distances
             total_distance = 0.0
             for i in range(len(sort_points) - 1):
-                dist_nm = geopy.distance.great_circle(sort_points[i], sort_points[i+1]).nm
+                dist_nm = geopy.distance.great_circle(sort_points[i], sort_points[i + 1]).nm
                 total_distance += dist_nm
             
             # Average spacing between points in nautical miles
@@ -978,8 +1011,14 @@ class weather_router:
 
             intersects = False
             if dist_to_finish <= leg_distance_nm + self.finish_size:
-                intersects, hit_lat, hit_lon, hit_dist_nm = self.leg_finish_intersection(
-                    lat_init, lon_init, heading, leg_distance_nm
+                intersects, hit_lat, hit_lon, hit_dist_nm = _leg_finish_intersection_numba(
+                    float(lat_init),
+                    float(lon_init),
+                    float(heading),
+                    float(leg_distance_nm),
+                    float(self.end_point[0]),
+                    float(self.end_point[1]),
+                    float(self.finish_size),
                 )
                 if intersects:
                     lat, lon = hit_lat, hit_lon

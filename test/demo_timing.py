@@ -323,6 +323,21 @@ def main() -> int:
     headers = [
         "timestamp_utc",
         "git_sha",
+        "cpu_model",
+        "algo_runtime_seconds",
+    ]
+    values = [
+        timestamp_utc,
+        head_sha,
+        sys_info["cpu_model"],
+        f"{algo_elapsed:.2f}",
+    ]
+
+    _write_markdown_table(report_path, headers, values)
+
+    csv_headers = [
+        "timestamp_utc",
+        "git_sha",
         "git_branch",
         "cpu_model",
         "cpu_cores",
@@ -339,7 +354,7 @@ def main() -> int:
         "algo_runtime_seconds",
         "total_runtime_seconds",
     ]
-    values = [
+    csv_values = [
         timestamp_utc,
         head_sha,
         branch,
@@ -358,9 +373,7 @@ def main() -> int:
         f"{algo_elapsed:.2f}",
         f"{elapsed:.2f}",
     ]
-
-    _write_markdown_table(report_path, headers, values)
-    _append_csv(csv_path, headers, values)
+    _append_csv(csv_path, csv_headers, csv_values)
 
     try:
         import cartopy.crs as ccrs
