@@ -9,7 +9,20 @@ authors = [
 ]
 description = "A Pure Python Weather Routing Tool"
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "pandas",
+    "geopy",
+    "numba>=0.59",
+    "xarray",
+    "zarr",
+    "fsspec",
+    "aiohttp",
+    "requests",
+    "netcdf4",
+    "scipy",
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",

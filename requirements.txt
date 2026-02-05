@@ -3,3 +3,9 @@ pandas
 geopy
 numba>=0.59
 xarray
+zarr
+fsspec
+aiohttp
+requests
+netcdf4
+scipy

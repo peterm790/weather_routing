@@ -23,6 +23,17 @@ You can also run scripts without activating the venv:
 uv run python -c "import weather_router; print(weather_router.__file__)"
 ```
 
+Working end-to-end demo (recommended; mirrors the Modal server):
+
+```bash
+uv run python test/demo_timing.py
+```
+
+This demo:
+- Uses the dynamical GFS forecast dataset (`data.dynamical.org`)
+- Loads the same GEBCO land/sea mask used by the Modal server
+- Runs a full routing and writes `demo_timing.md` with timing stats
+
 To perform a routing using the same dynamical forecast data source as the Modal deployment (GFS on data.dynamical.org):
 
 - First import packages:
