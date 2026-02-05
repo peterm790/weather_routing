@@ -23,6 +23,28 @@ You can also run scripts without activating the venv:
 uv run python -c "import weather_router; print(weather_router.__file__)"
 ```
 
+## Running Tests Locally
+
+Install dev dependencies (only needed once):
+
+```bash
+uv venv
+uv pip install -r requirements.txt
+uv pip install -r requirements-dev.txt
+```
+
+Run the full test suite (mirrors CI):
+
+```bash
+uv run python -m pytest test/routing_test.py test/antimeridian_equator_test.py -v
+```
+
+Run all tests under `test/`:
+
+```bash
+uv run python -m pytest test -v
+```
+
 Working end-to-end benchmark (recommended; mirrors the Modal server and uses a local cache):
 
 ```bash

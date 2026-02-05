@@ -40,17 +40,44 @@ def wrap_lon_to_domain(lon, lon_min_v, lon_max_v):
     Wrap longitude into the data domain [lon_min_v, lon_max_v].
     Equivalent to modulo wrap used before nearest-neighbor selection.
     """
-    width = lon_max_v - lon_min_v
-    if width <= 0.0:
+    if lon_max_v <= lon_min_v:
         return lon
-    lon_rel = lon - lon_min_v
-    wrapped_rel = lon_rel % 360.0
-    wrapped = lon_min_v + wrapped_rel
-    if wrapped < lon_min_v:
-        wrapped = lon_min_v
-    if wrapped > lon_max_v:
-        wrapped = lon_max_v
-    return wrapped
+
+    # Prefer the representation that's already inside the domain, or that requires
+    # the smallest +/-360 adjustment to get inside. This avoids pathological
+    # behavior when the domain has been padded beyond 360 degrees.
+    best = lon
+    best_delta = 1e30
+    found = False
+    cand0 = lon
+    cand1 = lon + 360.0
+    cand2 = lon - 360.0
+
+    if lon_min_v <= cand0 <= lon_max_v:
+        best = cand0
+        best_delta = 0.0
+        found = True
+    if lon_min_v <= cand1 <= lon_max_v:
+        d = abs(cand1 - lon)
+        if d < best_delta:
+            best = cand1
+            best_delta = d
+            found = True
+    if lon_min_v <= cand2 <= lon_max_v:
+        d = abs(cand2 - lon)
+        if d < best_delta:
+            best = cand2
+            found = True
+
+    if found:
+        return best
+
+    # Fallback: clamp (treat out-of-domain as edge).
+    if lon < lon_min_v:
+        return lon_min_v
+    if lon > lon_max_v:
+        return lon_max_v
+    return lon
 
 
 @njit(cache=True, fastmath=True)

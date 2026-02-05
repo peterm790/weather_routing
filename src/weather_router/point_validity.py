@@ -153,8 +153,20 @@ class land_sea_mask():
             lsm = xr.open_dataset(file)
         
         if 'longitude' in lsm.coords:
+            # Normalize to [-180, 180) then sort. For dateline-crossing bboxes this
+            # can create a large discontinuity (e.g. [-180..-170, 170..180]).
             lsm.coords['longitude'] = (lsm.coords['longitude'] + 180) % 360 - 180
             lsm = lsm.sortby(lsm.longitude)
+
+            # If there's a big jump between adjacent longitudes, "unwrap" the
+            # negative side by +360 to make the grid continuous for strict DDA.
+            lons = lsm['longitude'].values
+            if lons.size > 1:
+                diffs = lons[1:] - lons[:-1]
+                if float(diffs.max()) > 180.0:
+                    lons_unwrapped = lons.copy()
+                    lons_unwrapped[lons_unwrapped < 0.0] += 360.0
+                    lsm = lsm.assign_coords(longitude=lons_unwrapped).sortby('longitude')
         
         if 'time' in lsm:
             lsm = lsm.isel(time = 0)
@@ -213,48 +225,22 @@ class land_sea_mask():
 
     def _segment_cells_clear_wrapped(self, lat0: float, lon0: float, lat1: float, lon1: float, land_threshold: float) -> bool:
         """
-        Dateline-safe wrapper around _dda_cells_clear(): splits segments that cross ±180°.
+        Dateline-safe wrapper around _dda_cells_clear().
+
+        We first wrap longitudes into the mask's longitude domain (which may be
+        unwrapped to something like 170..190 for dateline-crossing subsets),
+        then choose the short-way-around representation for the segment.
         """
-        eps = 1e-9
-        lon0w = self._wrap_lon(lon0)
-        lon1w = self._wrap_lon(lon1)
+        lon0d = wrap_lon_to_domain(float(lon0), self._lon_min, self._lon_max)
+        lon1d = wrap_lon_to_domain(float(lon1), self._lon_min, self._lon_max)
 
-        # Make lon1 close to lon0 (short way around) for splitting.
-        while lon1w - lon0w > 180.0:
-            lon1w -= 360.0
-        while lon1w - lon0w < -180.0:
-            lon1w += 360.0
+        # Ensure we traverse the short way around in longitude space.
+        while lon1d - lon0d > 180.0:
+            lon1d -= 360.0
+        while lon1d - lon0d < -180.0:
+            lon1d += 360.0
 
-        if -180.0 <= lon1w <= 180.0:
-            return self._dda_cells_clear(lat0, lon0w, lat1, lon1w, land_threshold)
-
-        # Segment crosses the dateline; split into two parts.
-        if lon1w > 180.0:
-            boundary1 = 180.0 - eps
-            boundary2 = -180.0 + eps
-            denom = (lon1w - lon0w)
-            if denom == 0.0:
-                return False
-            t = (boundary1 - lon0w) / denom
-            latm = float(lat0) + t * (float(lat1) - float(lat0))
-            # First: lon0 -> +180, Second: -180 -> lon1-360
-            if not self._dda_cells_clear(lat0, lon0w, latm, boundary1, land_threshold):
-                return False
-            return self._dda_cells_clear(latm, boundary2, lat1, lon1w - 360.0, land_threshold)
-
-        if lon1w < -180.0:
-            boundary1 = -180.0 + eps
-            boundary2 = 180.0 - eps
-            denom = (lon1w - lon0w)
-            if denom == 0.0:
-                return False
-            t = (boundary1 - lon0w) / denom
-            latm = float(lat0) + t * (float(lat1) - float(lat0))
-            if not self._dda_cells_clear(lat0, lon0w, latm, boundary1, land_threshold):
-                return False
-            return self._dda_cells_clear(latm, boundary2, lat1, lon1w + 360.0, land_threshold)
-
-        return False
+        return self._dda_cells_clear(lat0, lon0d, lat1, lon1d, land_threshold)
 
     def leg_is_clear_strict(
         self,
