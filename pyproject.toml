@@ -22,6 +22,7 @@ dependencies = [
     "requests",
     "netcdf4",
     "scipy",
+    "matplotlib",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+if [[ "${SKIP_DEMO_TIMING:-}" == "1" ]]; then
+  echo "SKIP_DEMO_TIMING=1 set; skipping demo timing."
+  exit 0
+fi
+
+echo "Running demo timing..."
+uv run python test/demo_timing.py

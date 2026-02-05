@@ -9,3 +9,4 @@ aiohttp
 requests
 netcdf4
 scipy
+matplotlib

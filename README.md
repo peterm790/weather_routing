@@ -23,7 +23,7 @@ You can also run scripts without activating the venv:
 uv run python -c "import weather_router; print(weather_router.__file__)"
 ```
 
-Working end-to-end demo (recommended; mirrors the Modal server):
+Working end-to-end demo (recommended; mirrors the Modal server and uses a local cache):
 
 ```bash
 uv run python test/demo_timing.py
@@ -32,7 +32,21 @@ uv run python test/demo_timing.py
 This demo:
 - Uses the dynamical GFS forecast dataset (`data.dynamical.org`)
 - Loads the same GEBCO land/sea mask used by the Modal server
-- Runs a full routing and writes `demo_timing.md` with timing stats
+- Caches the weather subset locally at `cache/demo_gfs_2024-07-10T20Z.zarr`
+- Runs a full routing and writes `demo_timing.md` and `demo_timing.csv` with timing stats
+- Writes a static route image to `demo_route.png`
+
+To enable the local pre-push hook (runs the demo on every push):
+
+```bash
+./dev/install_git_hooks.sh
+```
+
+You can skip the hook for a single push:
+
+```bash
+SKIP_DEMO_TIMING=1 git push
+```
 
 To perform a routing using the same dynamical forecast data source as the Modal deployment (GFS on data.dynamical.org):
 
