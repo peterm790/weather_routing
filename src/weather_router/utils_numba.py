@@ -3,6 +3,10 @@ from numba import njit
 
 @njit(cache=True)
 def nearest_index(vals, x, asc):
+    """
+    Return nearest index in a sorted 1D array.
+    Equivalent to `xarray.sel(..., method="nearest")` on that coordinate.
+    """
     left = 0
     right = vals.size
     if asc:
@@ -32,6 +36,10 @@ def nearest_index(vals, x, asc):
 
 @njit(cache=True)
 def wrap_lon_to_domain(lon, lon_min_v, lon_max_v):
+    """
+    Wrap longitude into the data domain [lon_min_v, lon_max_v].
+    Equivalent to modulo wrap used before nearest-neighbor selection.
+    """
     width = lon_max_v - lon_min_v
     if width <= 0.0:
         return lon
@@ -51,6 +59,7 @@ def polar_speed(tws, twa, speed_table, tws_max, twa_step, twa_max):
     Fast polar lookup mirroring Polar.getSpeed rounding/clamping.
     - tws rounded to nearest int and clamped to tws_max
     - twa rounded to nearest twa_step and clamped to [0, twa_max]
+    Equivalent to Polar.getSpeed(tws, abs(twa)) but Numba-friendly.
     """
     step = float(twa_step)
     rtwa = int(round(float(twa) / step)) * step

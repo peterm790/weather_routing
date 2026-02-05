@@ -57,6 +57,7 @@ def haversine_nm_vec(lat1_arr, lon1_arr, lat2, lon2):
     """
     Vectorized haversine distance (nm) from arrays lat1/lon1 to a single lat2/lon2.
     Accepts numpy arrays or array-likes for lat1_arr/lon1_arr.
+    Equivalent to geopy.distance.great_circle(...).nm (spherical Earth).
     """
     lat1 = np.radians(np.asarray(lat1_arr, dtype=np.float64))
     lon1 = np.radians(np.asarray(lon1_arr, dtype=np.float64))
@@ -73,6 +74,7 @@ def haversine_nm_vec(lat1_arr, lon1_arr, lat2, lon2):
 def haversine_nm_scalar(lat1, lon1, lat2, lon2) -> float:
     """
     Scalar haversine distance (nm).
+    Equivalent to geopy.distance.great_circle((lat1, lon1), (lat2, lon2)).nm (spherical Earth).
     """
     lat1r = math.radians(float(lat1))
     lon1r = math.radians(float(lon1))
