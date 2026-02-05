@@ -18,6 +18,50 @@ def _wrap_lon180(lon_deg: float) -> float:
     return (float(lon_deg) + 180.0) % 360.0 - 180.0
 
 
+@njit(cache=True)
+def _nearest_index_numba(vals, x, asc):
+    left = 0
+    right = vals.size
+    if asc:
+        while left < right:
+            mid = (left + right) // 2
+            if vals[mid] < x:
+                left = mid + 1
+            else:
+                right = mid
+    else:
+        while left < right:
+            mid = (left + right) // 2
+            if vals[mid] > x:
+                left = mid + 1
+            else:
+                right = mid
+    i = left
+    if i == 0:
+        return 0
+    n = vals.size
+    if i >= n:
+        return n - 1
+    dr = abs(vals[i] - x)
+    dl = abs(x - vals[i - 1])
+    return i if dr <= dl else i - 1
+
+
+@njit(cache=True)
+def _wrap_lon_to_domain_numba(lon, lon_min_v, lon_max_v):
+    width = lon_max_v - lon_min_v
+    if width <= 0.0:
+        return lon
+    lon_rel = lon - lon_min_v
+    wrapped_rel = lon_rel % 360.0
+    wrapped = lon_min_v + wrapped_rel
+    if wrapped < lon_min_v:
+        wrapped = lon_min_v
+    if wrapped > lon_max_v:
+        wrapped = lon_max_v
+    return wrapped
+
+
 @njit(cache=True, fastmath=True)
 def _gc_destination(lat_deg: float, lon_deg: float, bearing_deg: float, distance_nm: float):
     """
@@ -209,6 +253,12 @@ class land_sea_mask():
         self.lsm_arr = lsm.values
         self.lats = list(lsm.latitude.values)
         self.lons = list(lsm.longitude.values)
+        self._lat_vals = lsm.latitude.values.astype('float64')
+        self._lon_vals = lsm.longitude.values.astype('float64')
+        self._lat_asc = bool(self._lat_vals[0] <= self._lat_vals[-1])
+        self._lon_asc = bool(self._lon_vals[0] <= self._lon_vals[-1])
+        self._lon_min = float(self._lon_vals.min())
+        self._lon_max = float(self._lon_vals.max())
 
     @staticmethod
     def _wrap_lon(lon: float) -> float:
@@ -467,4 +517,12 @@ class land_sea_mask():
             return res
         if self.method == 'nearest':
             # method = nearest is problematic at low resolutions
-            return self.lsm.sel(latitude = lat,longitude = lon, method = 'nearest').values <= 0.1
+            try:
+                lat_f = float(lat)
+                lon_f = float(lon)
+            except Exception:
+                return False
+            lon_wrapped = _wrap_lon_to_domain_numba(lon_f, self._lon_min, self._lon_max)
+            yi = int(_nearest_index_numba(self._lat_vals, lat_f, self._lat_asc))
+            xi = int(_nearest_index_numba(self._lon_vals, lon_wrapped, self._lon_asc))
+            return float(self.lsm_arr[yi, xi]) <= 0.1

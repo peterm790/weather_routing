@@ -20,7 +20,6 @@ from pathlib import Path
 
 import numpy as np
 import xarray as xr
-from numba import njit
 
 
 def _run_git(repo_root: Path, *args: str) -> str:
@@ -233,69 +232,12 @@ def main() -> int:
         lead_time_start=lead_time_start,
     )
 
-    lat_vals = ds_processed["lat"].values
-    lon_vals = ds_processed["lon"].values
-    time_vals = ds_processed["time"].values
-    tws_arr = ds_processed["tws"].values
-    twd_arr = ds_processed["twd"].values
-
-    lat_vals_f64 = lat_vals.astype("float64")
-    lon_vals_f64 = lon_vals.astype("float64")
-    time_vals_ns = time_vals.astype("datetime64[ns]").astype("int64")
-    lat_asc = bool(lat_vals_f64[0] <= lat_vals_f64[-1])
-    lon_asc = bool(lon_vals_f64[0] <= lon_vals_f64[-1])
-    lon_min = float(lon_vals_f64.min())
-    lon_max = float(lon_vals_f64.max())
-
-    @njit(cache=True)
-    def _nearest_index_numba(vals, x, asc):
-        left = 0
-        right = vals.size
-        if asc:
-            while left < right:
-                mid = (left + right) // 2
-                if vals[mid] < x:
-                    left = mid + 1
-                else:
-                    right = mid
-        else:
-            while left < right:
-                mid = (left + right) // 2
-                if vals[mid] > x:
-                    left = mid + 1
-                else:
-                    right = mid
-        i = left
-        if i == 0:
-            return 0
-        n = vals.size
-        if i >= n:
-            return n - 1
-        dr = abs(vals[i] - x)
-        dl = abs(x - vals[i - 1])
-        return i if dr <= dl else i - 1
-
-    @njit(cache=True)
-    def _wrap_lon_to_domain_numba(lon, lon_min_v, lon_max_v):
-        width = lon_max_v - lon_min_v
-        if width <= 0.0:
-            return lon
-        lon_rel = lon - lon_min_v
-        wrapped_rel = lon_rel % 360.0
-        wrapped = lon_min_v + wrapped_rel
-        if wrapped < lon_min_v:
-            wrapped = lon_min_v
-        if wrapped > lon_max_v:
-            wrapped = lon_max_v
-        return wrapped
-
     def get_wind(t, lat, lon):
-        t_ns = np.int64(np.datetime64(t, "ns").astype("int64"))
-        ti = int(_nearest_index_numba(time_vals_ns, t_ns, True))
-        yi = int(_nearest_index_numba(lat_vals_f64, float(lat), lat_asc))
-        wl = float(_wrap_lon_to_domain_numba(float(lon), lon_min, lon_max))
-        xi = int(_nearest_index_numba(lon_vals_f64, wl, lon_asc))
-        return (np.float32(twd_arr[ti, yi, xi]), np.float32(tws_arr[ti, yi, xi]))
+        tws_sel = ds_processed.tws.sel(time=t, method="nearest")
+        tws_sel = tws_sel.sel(lat=lat, lon=lon, method="nearest")
+        twd_sel = ds_processed.twd.sel(time=t, method="nearest")
+        twd_sel = twd_sel.sel(lat=lat, lon=lon, method="nearest")
+        return (np.float32(twd_sel.values), np.float32(tws_sel.values))
 
     print("fetching polar")
     url = f"https://data.offshoreweatherrouting.com/polars/{polar_file}.pol"
