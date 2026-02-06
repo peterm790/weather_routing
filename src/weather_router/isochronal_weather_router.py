@@ -3,7 +3,7 @@ import pandas as pd
 import math
 import geopy
 import geopy.distance
-from numba import njit
+from numba import njit, prange
 
 from .utils_geo import (
     _R_EARTH_NM,
@@ -98,6 +98,50 @@ def _leg_finish_intersection_numba(
     hit_distance_nm = delta_hit * _R_EARTH_NM
     hit_lat, hit_lon = gc_destination(lat0, lon0, heading_deg, hit_distance_nm)
     return True, hit_lat, hit_lon, hit_distance_nm
+
+@njit(cache=True, fastmath=True, parallel=True)
+def _check_route_proximity_numba(
+    candidates_arr,    # Nx2 array (lat, lon)
+    window_arr,        # Mx2 array (lat, lon) of route points
+    current_step,
+    window_start_idx,
+    threshold
+):
+    """
+    Returns a boolean mask of candidates that are within the 'behind' threshold.
+    """
+    n_candidates = len(candidates_arr)
+    n_window = len(window_arr)
+    keep = np.empty(n_candidates, dtype=np.bool_)
+
+    for i in prange(n_candidates):
+        c_lat = candidates_arr[i, 0]
+        c_lon = candidates_arr[i, 1]
+        
+        min_dist = 1e9  # arbitrary large float
+        best_window_idx = -1
+        
+        # Find closest point in the route window
+        for j in range(n_window):
+            w_lat = window_arr[j, 0]
+            w_lon = window_arr[j, 1]
+            
+            # Using your existing imported scalar haversine
+            dist = haversine_nm_scalar(c_lat, c_lon, w_lat, w_lon)
+            
+            if dist < min_dist:
+                min_dist = dist
+                best_window_idx = j
+        
+        # Logic: if closest point index is too far back in time, prune
+        if best_window_idx != -1:
+            closest_global_idx = window_start_idx + best_window_idx
+            # If (current_step - closest_idx) < threshold, we keep it
+            keep[i] = (current_step - closest_global_idx) < threshold
+        else:
+            keep[i] = False # Should not happen if window is populated
+
+    return keep
 
 class weather_router:
     def __init__(
@@ -632,26 +676,26 @@ class weather_router:
                 f"Computed [{start_idx}, {end_idx}) for {step=}, {window_size=}, {n_route=}."
             )
 
-        keep = []
-        for row in arr:
-            lat = float(row[0])
-            lon = float(row[1])
+        # Pre-slice the window to avoid slicing inside the loop
+        # and ensure we are working with simple floats
+        window_subset = route_points[start_idx:end_idx]
 
-            min_dist = float("inf")
-            closest_idx = None
-            for i in range(start_idx, end_idx):
-                r_lat, r_lon = route_points[i]
-                dist_nm = geopy.distance.great_circle((r_lat, r_lon), (lat, lon)).nm
-                if dist_nm < min_dist:
-                    min_dist = dist_nm
-                    closest_idx = i
+        # Extract candidate coordinates as Nx2 array
+        candidates = np.array([[float(row[0]), float(row[1])] for row in arr], dtype=np.float64)
+        
+        # Convert window subset to Mx2 array
+        window_arr = np.array([[float(r_lat), float(r_lon)] for r_lat, r_lon in window_subset], dtype=np.float64)
+        
+        # Use Numba-accelerated function
+        keep_mask = _check_route_proximity_numba(
+            candidates,
+            window_arr,
+            step,
+            start_idx,
+            behind_threshold_steps
+        )
 
-            if closest_idx is None:
-                raise ValueError("prune_behind_route_step(): internal error: no closest_idx found.")
-
-            keep.append((step - closest_idx) < behind_threshold_steps)
-
-        return arr[keep]
+        return arr[keep_mask]
 
     def get_possible(self, lat_init, lon_init, route, bearing_end, t, previous_twa=None):
         possible = []
@@ -877,7 +921,9 @@ class weather_router:
             # Calculate cumulative distances using geographical distances
             total_distance = 0.0
             for i in range(len(sort_points) - 1):
-                dist_nm = geopy.distance.great_circle(sort_points[i], sort_points[i + 1]).nm
+                lat1, lon1 = sort_points[i]
+                lat2, lon2 = sort_points[i + 1]
+                dist_nm = haversine_nm_scalar(lat1, lon1, lat2, lon2)
                 total_distance += dist_nm
             
             # Average spacing between points in nautical miles
@@ -907,7 +953,7 @@ class weather_router:
         for i in range(start_idx, end_idx):
             center_lat, center_lon = route_points[i]
             # Use geographical distance in nautical miles
-            distance_to_center = geopy.distance.great_circle((lat, lon), (center_lat, center_lon)).nm
+            distance_to_center = haversine_nm_scalar(lat, lon, center_lat, center_lon)
             if distance_to_center < min_distance_to_center:
                 min_distance_to_center = distance_to_center
                 closest_spacing = spacings[min(i, len(spacings) - 1)]
@@ -1193,7 +1239,7 @@ class weather_router:
                 
                 for i in range(start_idx, end_idx):
                     r_lat, r_lon = route_points[i]
-                    dist = geopy.distance.great_circle((r_lat, r_lon), (best_lat, best_lon)).nm
+                    dist = haversine_nm_scalar(r_lat, r_lon, best_lat, best_lon)
                     if dist < min_dist:
                         min_dist = dist
                         closest_idx = i

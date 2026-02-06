@@ -293,8 +293,15 @@ def main() -> int:
 
     algo_start = time.perf_counter()
     weatherrouter.route()
+    # Run optimization pass
+    initial_route_df = weatherrouter.get_fastest_route(stats=True)
+    initial_isochrones = weatherrouter.get_isochrones()
+    weatherrouter.optimize(
+        previous_route=initial_route_df,
+        previous_isochrones=initial_isochrones
+    )
     algo_elapsed = time.perf_counter() - algo_start
-    route_df = weatherrouter.get_fastest_route(stats=True)
+    route_df = weatherrouter.get_fastest_route(stats=True, use_optimized=True)
     elapsed = time.perf_counter() - start
 
     route_points = route_df.shape[0]

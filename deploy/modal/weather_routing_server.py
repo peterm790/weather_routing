@@ -6,10 +6,10 @@ from functools import lru_cache
 
 # Define the image with dependencies
 image = (
-    modal.Image.debian_slim()
+    modal.Image.debian_slim(python_version="3.11")
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20260106_9"}) 
+    .env({"FORCE_BUILD": "20260205_1"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -275,9 +275,19 @@ def get_route(
         return _cached_wind_by_index(ti, yi, xi)
 
     # Load Polar
-    print('fetching polar')
+    print(f'fetching polar from {polar_file}')
     url = f"https://data.offshoreweatherrouting.com/polars/{polar_file}.pol"
-    with urllib.request.urlopen(url) as response:
+    
+    # Use browser-like headers to avoid Cloudflare blocking
+    req = urllib.request.Request(url)
+    req.add_header('User-Agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+    req.add_header('Accept', 'text/plain,text/*,*/*')
+    req.add_header('Accept-Language', 'en-US,en;q=0.9')
+    req.add_header('Accept-Encoding', 'gzip, deflate, br')
+    req.add_header('Connection', 'keep-alive')
+    req.add_header('Upgrade-Insecure-Requests', '1')
+    
+    with urllib.request.urlopen(req) as response:
         polar_data = response.read().decode('utf-8')
 
     volvo70_polar = polar.Polar(f=io.StringIO(polar_data))
