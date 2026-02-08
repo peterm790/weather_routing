@@ -9,7 +9,7 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20260205_1"}) 
+    .env({"FORCE_BUILD": "20260206_1"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -151,14 +151,13 @@ def get_route(
         # Construct indices for 3-hourly sequence; do not override crank_step or spacing
         # Hourly part: 0 to 120 (inclusive) every 3 hours
         hourly_indices = list(range(0, 121, 3))
-        # 3-hourly part: 121 to end
+        # 3-hourly part: 121 to end (data is already 3-hourly from 121+, so take all indices)
         three_hourly_indices = list(range(121, ds.sizes['lead_time']))
         indices = hourly_indices + three_hourly_indices
+
+        start_index = int(round(lead_time_start / 3))
         
         ds = ds.isel(lead_time=indices)
-        
-        # Calculate new start index
-        start_index = int(round(lead_time_start / 3))
         ds = ds.isel(lead_time=slice(start_index, None))
 
     ds = ds.load()
