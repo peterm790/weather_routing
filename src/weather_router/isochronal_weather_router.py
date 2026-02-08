@@ -247,8 +247,10 @@ class weather_router:
         # Fast polar lookup params for Numba
         self._polar_speed_table = self.polar.speedTable
         self._polar_tws_max = float(self.polar._tws_max)
+        self._polar_tws_min = float(self.polar._tws_min)
         self._polar_twa_step = float(self.polar._twa_step)
         self._polar_twa_max = float(self.polar._twa_max)
+        self._polar_twa_min = float(self.polar._twa_min)
 
         if leg_check_spacing_nm < 0.25:
             raise ValueError("leg_check_spacing_nm must be >= 0.25 (nautical miles)")
@@ -714,8 +716,10 @@ class weather_router:
                 abs(twa),
                 self._polar_speed_table,
                 self._polar_tws_max,
+                self._polar_tws_min,
                 self._polar_twa_step,
                 self._polar_twa_max,
+                self._polar_twa_min,
             )
 
             # Apply tack penalty if tacking
@@ -985,8 +989,10 @@ class weather_router:
                 abs(twa),
                 self._polar_speed_table,
                 self._polar_tws_max,
+                self._polar_tws_min,
                 self._polar_twa_step,
                 self._polar_twa_max,
+                self._polar_twa_min,
             )
             
             # Apply tack penalty if tacking

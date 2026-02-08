@@ -81,26 +81,28 @@ def wrap_lon_to_domain(lon, lon_min_v, lon_max_v):
 
 
 @njit(cache=True, fastmath=True)
-def polar_speed(tws, twa, speed_table, tws_max, twa_step, twa_max):
+def polar_speed(tws, twa, speed_table, tws_max, tws_min, twa_step, twa_max, twa_min):
     """
     Fast polar lookup mirroring Polar.getSpeed rounding/clamping.
-    - tws rounded to nearest int and clamped to tws_max
-    - twa rounded to nearest twa_step and clamped to [0, twa_max]
+    - tws rounded to nearest int and clamped to [tws_min, tws_max]
+    - twa rounded to nearest twa_step and clamped to [twa_min, twa_max]
     Equivalent to Polar.getSpeed(tws, abs(twa)) but Numba-friendly.
     """
     step = float(twa_step)
     rtwa = int(round(float(twa) / step)) * step
-    if rtwa < 0.0:
-        rtwa = 0.0
+    if rtwa < twa_min:
+        rtwa = twa_min
     if rtwa > twa_max:
         rtwa = twa_max
-    twa_idx = int(round(rtwa / step))
+    # Calculate index: (rtwa - twa_min) / step
+    twa_idx = int(round((rtwa - twa_min) / step))
 
     rtws = int(round(float(tws)))
     if rtws > int(tws_max):
         rtws = int(tws_max)
-    if rtws < 0:
-        rtws = 0
-    tws_idx = rtws
+    if rtws < int(tws_min):
+        rtws = int(tws_min)
+    # Calculate index: rtws - tws_min
+    tws_idx = rtws - int(tws_min)
 
     return speed_table[twa_idx][tws_idx]
