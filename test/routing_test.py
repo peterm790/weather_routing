@@ -39,6 +39,7 @@ if not _SRC_DIR.exists():
 sys.path.insert(0, str(_SRC_DIR))
 from weather_router.isochronal_weather_router import weather_router
 from weather_router.polar import Polar
+from weather_router.utils_numba import polar_speed
 
 
 ds = xr.open_zarr(str(_TEST_DIR / "test_ds.zarr"))
@@ -76,6 +77,52 @@ def _get_weatherrouter():
 def test_polar():
     weatherrouter = _get_weatherrouter()
     assert weatherrouter.polar.getSpeed(20, 45) == np.float64(12.5)
+
+
+def test_polar_speed_numba_matches_polar():
+    """Test that the Numba polar_speed function matches Polar.getSpeed"""
+    weatherrouter = _get_weatherrouter()
+    polar = weatherrouter.polar
+    
+    # Get the polar parameters
+    speed_table = polar.speedTable
+    tws_max = float(polar._tws_max)
+    tws_min = float(polar._tws_min)
+    twa_step = float(polar._twa_step)
+    twa_max = float(polar._twa_max)
+    twa_min = float(polar._twa_min)
+    
+    # Test various TWS/TWA combinations
+    test_cases = [
+        (20, 45),   # The existing test case
+        (10, 30),
+        (25, 60),
+        (15, 90),
+        (30, 120),
+        (5, 45),
+        (0, 0),
+        (60, 180),
+        (20, 0),    # Edge cases
+        (20, 180),
+        (0, 45),
+        (60, 45),
+    ]
+    
+    for tws, twa in test_cases:
+        expected = polar.getSpeed(tws, twa)
+        actual = polar_speed(
+            tws, 
+            abs(twa),  # polar_speed expects abs(twa)
+            speed_table,
+            tws_max,
+            tws_min,
+            twa_step,
+            twa_max,
+            twa_min
+        )
+        assert np.isclose(actual, expected, rtol=1e-10), \
+            f"Mismatch for TWS={tws}, TWA={twa}: expected {expected}, got {actual}"
+
 
 def test_isochrones():
     weatherrouter = _get_weatherrouter()
