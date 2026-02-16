@@ -33,3 +33,6 @@ classifiers = [
 [project.urls]
 "Homepage" = "https://github.com/peterm790/weather_routing"
 "Bug Tracker" = "https://github.com/peterm790/weather_routing/issues"
+
+[tool.ruff]
+extend-exclude = ["dev/to_zarr.ipynb"]

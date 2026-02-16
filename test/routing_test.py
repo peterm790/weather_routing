@@ -23,11 +23,9 @@ To run tests:
 """
 
 import xarray as xr
-import zarr
 import numpy as np
 import pytest
 import sys
-import os
 from pathlib import Path
 
 # Ensure local `src/` is importable without requiring installation.
@@ -37,10 +35,10 @@ _SRC_DIR = _REPO_ROOT / "src"
 if not _SRC_DIR.exists():
     raise FileNotFoundError(f"Expected src directory at: {_SRC_DIR}")
 sys.path.insert(0, str(_SRC_DIR))
-from weather_router.isochronal_weather_router import weather_router
-from weather_router.polar import Polar
-from weather_router.utils_numba import polar_speed
-from weather_router.wind_lookup import (
+from weather_router.isochronal_weather_router import weather_router  # noqa: E402
+from weather_router.polar import Polar  # noqa: E402
+from weather_router.utils_numba import polar_speed  # noqa: E402
+from weather_router.wind_lookup import (  # noqa: E402
     wind_indices_nearest_numba,
     wrap_lon_to_domain_numba,
 )
@@ -191,7 +189,7 @@ def test_polar_speed_numba_matches_polar():
 
 def test_isochrones():
     weatherrouter = _get_weatherrouter()
-    assert type(weatherrouter.get_isochrones()) == list
+    assert isinstance(weatherrouter.get_isochrones(), list)
     assert len(weatherrouter.get_isochrones()) == 3
     assert len(weatherrouter.get_isochrones()[0][0]) == 5  # Updated: now 5 columns [lat, lon, route, bearing, twa]
 
@@ -400,11 +398,11 @@ def test_tack_penalty():
     )
     
     # Test the is_tacking method directly
-    assert test_router.is_tacking(30, -30) == True   # port to starboard
-    assert test_router.is_tacking(-30, 30) == True   # starboard to port
-    assert test_router.is_tacking(30, 20) == False   # both starboard
-    assert test_router.is_tacking(-30, -20) == False # both port
-    assert test_router.is_tacking(30, None) == False # no previous TWA
+    assert test_router.is_tacking(30, -30)   # port to starboard
+    assert test_router.is_tacking(-30, 30)   # starboard to port
+    assert not test_router.is_tacking(30, 20)   # both starboard
+    assert not test_router.is_tacking(-30, -20) # both port
+    assert not test_router.is_tacking(30, None) # no previous TWA
     
     # Run routing and check that tack penalty info is in the results
     test_router.route()
@@ -418,10 +416,10 @@ def test_tack_penalty():
     
     # Check that tack penalty is applied correctly
     for i, row in route.iterrows():
-        if row['is_tacking'] == True:
+        if row['is_tacking']:
             expected_speed = row['base_boat_speed'] * (1.0 - test_router.tack_penalty)
             assert np.isclose(row['boat_speed'], expected_speed, rtol=0.01)
-        elif row['is_twa_change'] == True:
+        elif row['is_twa_change']:
             expected_speed = row['base_boat_speed'] * (1.0 - test_router.twa_change_penalty)
             assert np.isclose(row['boat_speed'], expected_speed, rtol=0.01)
         else:

@@ -1,8 +1,6 @@
 import numpy as np
 import pandas as pd
 import math
-import geopy
-import geopy.distance
 from numba import njit, prange
 
 from .utils_geo import (

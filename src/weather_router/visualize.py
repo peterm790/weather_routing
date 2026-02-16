@@ -1,7 +1,6 @@
 import holoviews as hv
 import geoviews as gv
 import hvplot.xarray
-from bokeh.resources import INLINE
 import numpy as np
 import pandas as pd
 

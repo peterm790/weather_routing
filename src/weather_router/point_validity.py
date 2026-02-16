@@ -421,7 +421,7 @@ class land_sea_mask():
                 x = self.lats.index(round(lat*4)/4)
                 y = self.lons.index(round(lon*4)/4)
                 res = self.lsm_arr[x,y] <= 0.1
-            except:
+            except Exception:
                 res = False
             return res
         if self.method == 'nearest':

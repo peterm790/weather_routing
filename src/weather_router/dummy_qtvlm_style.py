@@ -52,7 +52,8 @@ import geopy.distance
 
 def bearing_between(a: Tuple[float,float], b: Tuple[float,float]) -> float:
     """Return initial bearing (degrees) from point a(lat,lon) to b(lat,lon)."""
-    lat1 = math.radians(a[0]); lat2 = math.radians(b[0])
+    lat1 = math.radians(a[0])
+    lat2 = math.radians(b[0])
     dlon = math.radians(b[1]-a[1])
     x = math.sin(dlon) * math.cos(lat2)
     y = math.cos(lat1)*math.sin(lat2) - math.sin(lat1)*math.cos(lat2)*math.cos(dlon)

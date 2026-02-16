@@ -95,7 +95,7 @@ def get_route(
     import threading
     import time
     # Import here to ensure they are available in the container
-    from weather_router import isochronal_weather_router, polar, point_validity
+    from weather_router import isochronal_weather_router, polar
     from weather_router.wind_lookup import wind_indices_nearest_numba
 
     if freq not in ["1hr", "3hr"]:

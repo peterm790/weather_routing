@@ -6,8 +6,8 @@ and the antimeridian using the real land-sea mask (no routing run required).
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
-import numpy as np
 import xarray as xr
 
 # Ensure local `src/` is importable without requiring installation.
@@ -17,11 +17,10 @@ _SRC_DIR = _REPO_ROOT / "src"
 if not _SRC_DIR.exists():
     raise FileNotFoundError(f"Expected src directory at: {_SRC_DIR}")
 
-import sys
 sys.path.insert(0, str(_SRC_DIR))
 
-from weather_router.point_validity import land_sea_mask
-from weather_router.utils_geo import bearing_deg, haversine_nm_scalar
+from weather_router.point_validity import land_sea_mask  # noqa: E402
+from weather_router.utils_geo import bearing_deg, haversine_nm_scalar  # noqa: E402
 
 
 def _load_lsm() -> land_sea_mask:
