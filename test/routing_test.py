@@ -40,6 +40,10 @@ sys.path.insert(0, str(_SRC_DIR))
 from weather_router.isochronal_weather_router import weather_router
 from weather_router.polar import Polar
 from weather_router.utils_numba import polar_speed
+from weather_router.wind_lookup import (
+    wind_indices_nearest_numba,
+    wrap_lon_to_domain_numba,
+)
 
 
 ds = xr.open_zarr(str(_TEST_DIR / "test_ds.zarr"))
@@ -50,6 +54,55 @@ def getWindAt(t, lat, lon):
     twd_sel = ds.twd.sel(time = t, method = 'nearest')
     twd_sel = twd_sel.sel(lat = lat, lon = lon, method = 'nearest')
     return (np.float32(twd_sel.values), np.float32(tws_sel.values))
+
+
+def test_server_wind_lookup_matches_xarray_nearest():
+    lat_vals_f64 = ds["lat"].values.astype("float64")
+    lon_vals_f64 = ds["lon"].values.astype("float64")
+    time_vals_ns = ds["time"].values.astype("datetime64[ns]").astype("int64")
+    lat_asc = bool(lat_vals_f64[0] <= lat_vals_f64[-1])
+    lon_asc = bool(lon_vals_f64[0] <= lon_vals_f64[-1])
+    lon_min = float(lon_vals_f64.min())
+    lon_max = float(lon_vals_f64.max())
+    tws_arr = ds["tws"].values
+    twd_arr = ds["twd"].values
+
+    # Include in-domain, out-of-range, and wrapped-longitude cases.
+    sample_queries = [
+        (np.datetime64("2022-01-01T00:00:00"), -34.0, 0.0),
+        (np.datetime64("2022-01-02T03:15:00"), -29.2, -12.4),
+        (np.datetime64("2022-01-05T12:00:00"), -45.0, 19.5),
+        (np.datetime64("2021-12-31T22:00:00"), -8.0, 380.0),
+        (np.datetime64("2022-01-11T00:00:00"), -70.0, -361.0),
+    ]
+
+    for t, lat, lon in sample_queries:
+        t_ns = np.int64(np.datetime64(t, "ns").astype("int64"))
+        ti, yi, xi = wind_indices_nearest_numba(
+            time_vals_ns,
+            lat_vals_f64,
+            lon_vals_f64,
+            t_ns,
+            float(lat),
+            float(lon),
+            lat_asc,
+            lon_asc,
+            lon_min,
+            lon_max,
+        )
+        server_twd = np.float32(twd_arr[int(ti), int(yi), int(xi)])
+        server_tws = np.float32(tws_arr[int(ti), int(yi), int(xi)])
+
+        wrapped_lon = float(wrap_lon_to_domain_numba(float(lon), lon_min, lon_max))
+        tws_sel = ds.tws.sel(time=t, method="nearest").sel(
+            lat=lat, lon=wrapped_lon, method="nearest"
+        )
+        twd_sel = ds.twd.sel(time=t, method="nearest").sel(
+            lat=lat, lon=wrapped_lon, method="nearest"
+        )
+
+        assert server_tws == np.float32(tws_sel.values)
+        assert server_twd == np.float32(twd_sel.values)
 
 _weatherrouter = None
 
@@ -77,6 +130,18 @@ def _get_weatherrouter():
 def test_polar():
     weatherrouter = _get_weatherrouter()
     assert weatherrouter.polar.getSpeed(20, 45) == np.float64(12.5)
+
+
+def test_polar_tws_axis_sorted_and_low_wind_lookup_regression():
+    """
+    Regression for unsorted-TWS interpolation bug in Polar.__init__.
+    With Volvo70 data, low-wind lookup at TWS=4.3/TWA=150 should be ~3 kn,
+    not a high-wind value.
+    """
+    p = Polar(str(_TEST_DIR / "volvo70.pol"))
+    assert all(p.tws[i] <= p.tws[i + 1] for i in range(len(p.tws) - 1))
+    assert p.getSpeed(4.3, 150) == pytest.approx(3.04, abs=1e-9)
+    assert p.getSpeed(5.0, 150) == pytest.approx(3.8, abs=1e-9)
 
 
 def test_polar_speed_numba_matches_polar():

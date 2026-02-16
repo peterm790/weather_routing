@@ -43,9 +43,12 @@ class Polar:
 			df.index = self.twa
 
 		if isinstance(df, pd.DataFrame):
-			new_tws = list(range(0,int(df.columns[-1])))
+			df.columns = df.columns.astype(float)
+			df.index = df.index.astype(float)
+			max_tws = int(max(df.columns)) if len(df.columns) else 0
 		else:
-			new_tws = list(range(0,int(self.tws[-1])))
+			max_tws = int(max(self.tws)) if len(self.tws) else 0
+		new_tws = list(range(0, max_tws + 1))
 		new_twa = list(range(0,185,5))
 
 		df_new = pd.DataFrame(np.full((len(new_twa), len(new_tws)), np.nan))
@@ -54,7 +57,7 @@ class Polar:
 		df_new.index = new_twa
 		df_new.index = df_new.index.astype(float)
 
-		df = df.combine_first(df_new)
+		df = df.combine_first(df_new).sort_index(axis=0).sort_index(axis=1)
 		df = df.interpolate(axis = 0).interpolate(axis = 1).fillna(0)
 
 		self.tws = list(df.columns)

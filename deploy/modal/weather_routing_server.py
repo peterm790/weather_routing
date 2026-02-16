@@ -9,7 +9,7 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20260208_2"}) 
+    .env({"FORCE_BUILD": "20260216_1"}) 
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -96,7 +96,7 @@ def get_route(
     import time
     # Import here to ensure they are available in the container
     from weather_router import isochronal_weather_router, polar, point_validity
-    from numba import njit
+    from weather_router.wind_lookup import wind_indices_nearest_numba
 
     if freq not in ["1hr", "3hr"]:
         return Response(content="freq must be '1hr' or '3hr'", status_code=400)
@@ -214,51 +214,6 @@ def get_route(
     lon_min = float(lon_vals_f64.min())
     lon_max = float(lon_vals_f64.max())
 
-    @njit(cache=True)
-    def _nearest_index_numba(vals, x, asc):
-        # Binary search insertion point then choose nearest neighbor
-        left = 0
-        right = vals.size
-        if asc:
-            while left < right:
-                mid = (left + right) // 2
-                if vals[mid] < x:
-                    left = mid + 1
-                else:
-                    right = mid
-        else:
-            while left < right:
-                mid = (left + right) // 2
-                if vals[mid] > x:
-                    left = mid + 1
-                else:
-                    right = mid
-        i = left
-        if i == 0:
-            return 0
-        n = vals.size
-        if i >= n:
-            return n - 1
-        dr = abs(vals[i] - x)
-        dl = abs(x - vals[i - 1])
-        return i if dr <= dl else i - 1
-
-    @njit(cache=True)
-    def _wrap_lon_to_domain_numba(lon, lon_min_v, lon_max_v):
-        width = lon_max_v - lon_min_v
-        if width <= 0.0:
-            return lon
-        # normalize by 360 wrap
-        lon_rel = lon - lon_min_v
-        # Python-style modulo works in numba for floats
-        wrapped_rel = lon_rel % 360.0
-        wrapped = lon_min_v + wrapped_rel
-        if wrapped < lon_min_v:
-            wrapped = lon_min_v
-        if wrapped > lon_max_v:
-            wrapped = lon_max_v
-        return wrapped
-
     @lru_cache(maxsize=16384)
     def _cached_wind_by_index(ti: int, yi: int, xi: int):
         return (np.float32(twd_arr[ti, yi, xi]), np.float32(tws_arr[ti, yi, xi]))
@@ -267,11 +222,19 @@ def get_route(
     def get_wind(t, lat, lon):
         # Convert numpy.datetime64 to int64 ns for numba
         t_ns = np.int64(np.datetime64(t, 'ns').astype('int64'))
-        ti = int(_nearest_index_numba(time_vals_ns, t_ns, True))
-        yi = int(_nearest_index_numba(lat_vals_f64, float(lat), lat_asc))
-        wl = float(_wrap_lon_to_domain_numba(float(lon), lon_min, lon_max))
-        xi = int(_nearest_index_numba(lon_vals_f64, wl, lon_asc))
-        return _cached_wind_by_index(ti, yi, xi)
+        ti, yi, xi = wind_indices_nearest_numba(
+            time_vals_ns,
+            lat_vals_f64,
+            lon_vals_f64,
+            t_ns,
+            float(lat),
+            float(lon),
+            lat_asc,
+            lon_asc,
+            lon_min,
+            lon_max,
+        )
+        return _cached_wind_by_index(int(ti), int(yi), int(xi))
 
     # Load Polar
     print(f'fetching polar from {polar_file}')
