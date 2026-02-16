@@ -1,4 +1,5 @@
 zarr
 netcdf4
 pytest
+flake8
 numba>=0.59
