@@ -557,6 +557,16 @@ def test_strict_land_crossing_rejects_land_leg():
     assert lsm.leg_is_clear_strict(51.0, 0.0, 90.0, 30.0) is False
 
 
+def test_strict_land_crossing_max_subsegments_guardrail():
+    """
+    Strict mode should preserve the max_subsegments safety guardrail.
+    """
+    weatherrouter = _get_weatherrouter()
+    lsm = weatherrouter._lsm
+    with pytest.raises(ValueError, match="Strict land check would require"):
+        lsm.leg_is_clear_strict(0.0, -140.0, 90.0, 60.0, max_subsegments=1)
+
+
 def test_avoid_land_crossings_modes():
     """
     Ensure the router accepts the three land-crossing modes:

@@ -97,6 +97,93 @@ def _dda_cells_clear_core(lsm_arr, lat_origin, lon_origin, dlat, dlon, lat0, lon
     # If we didn't converge, be conservative.
     return False
 
+
+@njit(cache=True, fastmath=True)
+def _segment_cells_clear_wrapped_core(
+    lsm_arr,
+    lat_origin,
+    lon_origin,
+    dlat,
+    dlon,
+    lon_min,
+    lon_max,
+    lat0,
+    lon0,
+    lat1,
+    lon1,
+    land_threshold,
+) -> bool:
+    """
+    Dateline-safe wrapper around _dda_cells_clear_core().
+    """
+    lon0d = wrap_lon_to_domain(float(lon0), lon_min, lon_max)
+    lon1d = wrap_lon_to_domain(float(lon1), lon_min, lon_max)
+
+    # Ensure we traverse the short way around in longitude space.
+    while lon1d - lon0d > 180.0:
+        lon1d -= 360.0
+    while lon1d - lon0d < -180.0:
+        lon1d += 360.0
+
+    return _dda_cells_clear_core(
+        lsm_arr,
+        lat_origin,
+        lon_origin,
+        dlat,
+        dlon,
+        lat0,
+        lon0d,
+        lat1,
+        lon1d,
+        land_threshold,
+    )
+
+
+@njit(cache=True, fastmath=True)
+def _leg_is_clear_strict_core(
+    lsm_arr,
+    lat_origin,
+    lon_origin,
+    dlat,
+    dlon,
+    lon_min,
+    lon_max,
+    lat0,
+    lon0,
+    heading_deg,
+    distance_nm,
+    n_steps,
+    land_threshold,
+) -> bool:
+    """
+    Streaming strict checker: walk GC subsegments and reject on first blocked segment.
+    """
+    prev_lat = float(lat0)
+    prev_lon = float(lon0)
+
+    for k in range(1, int(n_steps) + 1):
+        d = float(distance_nm) * (float(k) / float(n_steps))
+        lat_p, lon_p = gc_destination(float(lat0), float(lon0), float(heading_deg), d)
+        if not _segment_cells_clear_wrapped_core(
+            lsm_arr,
+            lat_origin,
+            lon_origin,
+            dlat,
+            dlon,
+            lon_min,
+            lon_max,
+            prev_lat,
+            prev_lon,
+            float(lat_p),
+            float(lon_p),
+            land_threshold,
+        ):
+            return False
+        prev_lat = float(lat_p)
+        prev_lon = float(lon_p)
+
+    return True
+
 def _pad_with_land_border(lsm: xr.DataArray, pad: int = 1, land_value: float = 1.0) -> xr.DataArray:
     """
     Return a new DataArray with a constant land border of width `pad`.
@@ -194,6 +281,15 @@ class land_sea_mask():
         self._lon_asc = bool(self._lon_vals[0] <= self._lon_vals[-1])
         self._lon_min = float(self._lon_vals.min())
         self._lon_max = float(self._lon_vals.max())
+        (
+            self._lat_origin,
+            self._lon_origin,
+            self._dlat,
+            self._dlon,
+            self._nlat,
+            self._nlon,
+        ) = self._grid_params()
+        self._strict_step_nm = 0.5 * 60.0 * abs(float(self._dlat))
 
     @staticmethod
     def _wrap_lon(lon: float) -> float:
@@ -220,8 +316,18 @@ class land_sea_mask():
         Check all grid cells intersected by a straight segment in (lat,lon) space.
         Returns False if any intersected cell is land, or if traversal goes OOB.
         """
-        lat_origin, lon_origin, dlat, dlon, _, _ = self._grid_params()
-        return _dda_cells_clear_core(self.lsm_arr, lat_origin, lon_origin, dlat, dlon, lat0, lon0, lat1, lon1, land_threshold)
+        return _dda_cells_clear_core(
+            self.lsm_arr,
+            self._lat_origin,
+            self._lon_origin,
+            self._dlat,
+            self._dlon,
+            lat0,
+            lon0,
+            lat1,
+            lon1,
+            land_threshold,
+        )
 
     def _segment_cells_clear_wrapped(self, lat0: float, lon0: float, lat1: float, lon1: float, land_threshold: float) -> bool:
         """
@@ -231,16 +337,20 @@ class land_sea_mask():
         unwrapped to something like 170..190 for dateline-crossing subsets),
         then choose the short-way-around representation for the segment.
         """
-        lon0d = wrap_lon_to_domain(float(lon0), self._lon_min, self._lon_max)
-        lon1d = wrap_lon_to_domain(float(lon1), self._lon_min, self._lon_max)
-
-        # Ensure we traverse the short way around in longitude space.
-        while lon1d - lon0d > 180.0:
-            lon1d -= 360.0
-        while lon1d - lon0d < -180.0:
-            lon1d += 360.0
-
-        return self._dda_cells_clear(lat0, lon0d, lat1, lon1d, land_threshold)
+        return _segment_cells_clear_wrapped_core(
+            self.lsm_arr,
+            self._lat_origin,
+            self._lon_origin,
+            self._dlat,
+            self._dlon,
+            self._lon_min,
+            self._lon_max,
+            lat0,
+            lon0,
+            lat1,
+            lon1,
+            land_threshold,
+        )
 
     def leg_is_clear_strict(
         self,
@@ -272,8 +382,7 @@ class land_sea_mask():
 
         # Choose subsegment length based on the mask native latitude step (deg -> nm).
         # 1 degree latitude ~= 60 nm.
-        lat_origin, lon_origin, dlat, dlon, nlat, nlon = self._grid_params()
-        step_nm = 0.5 * 60.0 * abs(float(dlat))
+        step_nm = float(self._strict_step_nm)
         if step_nm <= 0.0:
             raise ValueError("Invalid land-sea mask grid step; cannot compute strict sampling step.")
 
@@ -286,18 +395,21 @@ class land_sea_mask():
                 f"Increase max_subsegments if you really want this."
             )
 
-        # Generate polyline points along the great-circle using the same bearing model as the router.
-        pts = []
-        for k in range(n_steps + 1):
-            d = distance_nm * (k / n_steps)
-            lat_p, lon_p = gc_destination(lat0, lon0, heading_deg, float(d))
-            pts.append((float(lat_p), float(lon_p)))
-
-        for (a_lat, a_lon), (b_lat, b_lon) in zip(pts[:-1], pts[1:]):
-            if not self._segment_cells_clear_wrapped(a_lat, a_lon, b_lat, b_lon, land_threshold):
-                return False
-
-        return True
+        return _leg_is_clear_strict_core(
+            self.lsm_arr,
+            self._lat_origin,
+            self._lon_origin,
+            self._dlat,
+            self._dlon,
+            self._lon_min,
+            self._lon_max,
+            lat0,
+            lon0,
+            heading_deg,
+            distance_nm,
+            n_steps,
+            float(land_threshold),
+        )
 
     def leg_is_clear_sparse(
         self,
