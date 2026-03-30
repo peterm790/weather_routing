@@ -163,6 +163,8 @@ class weather_router:
             finish_size=20,
             optimise_n_points=None,
             optimise_window=24,
+            optimise_max_passes=0,
+            use_equidistant_pruning=None,
             progress_callback=None,
             avoid_land_crossings=False,
             leg_check_spacing_nm: float = 1.0,
@@ -203,6 +205,11 @@ class weather_router:
                 number of points to maintain in each isochrone during optimization (defaults to n_points*2)
             :param optimise_window: int
                 time step window size (±) for optimization constraint search (default: 24)
+            :param optimise_max_passes: int
+                max optimization passes to run in optimize() (default: 0, i.e. skip optimization)
+            :param use_equidistant_pruning: bool | None
+                whether to use prune_equidistant in route/optimize.
+                If None, defaults to (optimise_max_passes > 0).
             :param progress_callback: function, optional
                 Callback function to report progress. Called with (step, dist_to_finish, isochrones).
             :param avoid_land_crossings: bool | str
@@ -241,6 +248,17 @@ class weather_router:
         self.finish_size = finish_size
         self.optimise_n_points = optimise_n_points if optimise_n_points is not None else n_points * 2
         self.optimise_window = optimise_window
+        if not isinstance(optimise_max_passes, int) or isinstance(optimise_max_passes, bool):
+            raise ValueError("optimise_max_passes must be an integer >= 0")
+        if optimise_max_passes < 0:
+            raise ValueError("optimise_max_passes must be >= 0")
+        self.optimise_max_passes = optimise_max_passes
+        if use_equidistant_pruning is None:
+            self.use_equidistant_pruning = self.optimise_max_passes > 0
+        elif isinstance(use_equidistant_pruning, bool):
+            self.use_equidistant_pruning = use_equidistant_pruning
+        else:
+            raise ValueError("use_equidistant_pruning must be bool or None")
         self.progress_callback = progress_callback
         # Fast polar lookup params for Numba
         self._polar_speed_table = self.polar.speedTable
@@ -782,7 +800,10 @@ class weather_router:
                                                     )
                     else:
                         possible = self.prune_slow(np.array(possible, dtype=object))
-                        possible, dist_wp = self.prune_equidistant(possible)
+                        if self.use_equidistant_pruning:
+                            possible, dist_wp = self.prune_equidistant(possible)
+                        else:
+                            dist_wp = self.get_min_dist_wp(possible) if len(possible) > 0 else float("inf")
                         print('step', step, 'number of isochrone points', len(possible), 'dist to finish', f'{dist_wp:.1f}')
                         if self.progress_callback:
                             self.progress_callback(step, dist_wp, possible)
@@ -1130,8 +1151,15 @@ class weather_router:
         if len(self.time_steps) == 0:
             raise ValueError("optimize() requires non-empty self.time_steps.")
 
-        # Outer loop: repeat passes if equidistant pruning occurred, up to a safety cap
-        max_passes = 5
+        # Clear any stale optimized state from earlier runs.
+        self.optimized_isochrones = []
+
+        # If optimization is disabled, return the best route from the main pass.
+        if self.optimise_max_passes == 0:
+            return self.get_fastest_route(use_optimized=False)
+
+        # Outer loop: repeat passes if equidistant pruning occurred, up to configured cap
+        max_passes = self.optimise_max_passes
         pass_idx = 0
         curr_route = previous_route
         curr_isochrones = previous_isochrones
@@ -1262,7 +1290,7 @@ class weather_router:
                 possible = self.prune_slow(arr_possible, waypoint=waypoint)
                 possible, dist_wp = self.prune_close_together(possible)
                 
-                if len(possible) > self.optimise_n_points:
+                if self.use_equidistant_pruning and len(possible) > self.optimise_n_points:
                     used_equidistant = True
                     print('pruning in optimise!')
                     original_n_points = self.n_points
@@ -1319,7 +1347,7 @@ class weather_router:
             # Prepare for next pass using the optimized results
             pass_idx += 1
             if pass_idx >= max_passes:
-                raise RuntimeError("optimize(): exceeded max passes without eliminating equidistant pruning")
+                return self.get_fastest_route(use_optimized=True)
             
             # Feed back optimized isochrones and route as the new constraints
             curr_isochrones = self.optimized_isochrones

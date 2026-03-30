@@ -218,6 +218,70 @@ def test_n_points_parameter():
     assert router_with_custom_n_points.n_points == 25
     assert router_with_custom_n_points.tack_penalty == 0.3
 
+
+def test_optimise_max_passes_and_equidistant_default_coupling():
+    with pytest.raises(ValueError):
+        weather_router(
+            Polar(str(_TEST_DIR / "volvo70.pol")),
+            getWindAt,
+            ds.time.values[:2],
+            12,
+            (-34, 0),
+            (-34, 17),
+            optimise_max_passes=-1,
+        )
+
+    r_zero = weather_router(
+        Polar(str(_TEST_DIR / "volvo70.pol")),
+        getWindAt,
+        ds.time.values[:2],
+        12,
+        (-34, 0),
+        (-34, 17),
+        optimise_max_passes=0,
+        use_equidistant_pruning=None,
+    )
+    assert r_zero.optimise_max_passes == 0
+    assert r_zero.use_equidistant_pruning is False
+
+    r_positive = weather_router(
+        Polar(str(_TEST_DIR / "volvo70.pol")),
+        getWindAt,
+        ds.time.values[:2],
+        12,
+        (-34, 0),
+        (-34, 17),
+        optimise_max_passes=2,
+        use_equidistant_pruning=None,
+    )
+    assert r_positive.optimise_max_passes == 2
+    assert r_positive.use_equidistant_pruning is True
+
+    r_override_true = weather_router(
+        Polar(str(_TEST_DIR / "volvo70.pol")),
+        getWindAt,
+        ds.time.values[:2],
+        12,
+        (-34, 0),
+        (-34, 17),
+        optimise_max_passes=0,
+        use_equidistant_pruning=True,
+    )
+    assert r_override_true.use_equidistant_pruning is True
+
+    r_override_false = weather_router(
+        Polar(str(_TEST_DIR / "volvo70.pol")),
+        getWindAt,
+        ds.time.values[:2],
+        12,
+        (-34, 0),
+        (-34, 17),
+        optimise_max_passes=3,
+        use_equidistant_pruning=False,
+    )
+    assert r_override_false.use_equidistant_pruning is False
+
+
 def test_return_equidistant():
     """Test the return_equidistant function with known input"""
     # Create a simple curved isochrone
@@ -311,6 +375,7 @@ def test_equidistant_routing_integration():
         (-34,0), 
         (-34,17),
         n_points=10,  # Small number for testing
+        use_equidistant_pruning=True,
         tack_penalty=0.4
     )
     
@@ -349,6 +414,7 @@ def test_equidistant_vs_traditional():
         (-34,0), 
         (-34,17),
         n_points=5,
+        use_equidistant_pruning=True,
         tack_penalty=0.3
     )
     
@@ -360,6 +426,7 @@ def test_equidistant_vs_traditional():
         (-34,0), 
         (-34,17),
         n_points=15,
+        use_equidistant_pruning=True,
         tack_penalty=0.3
     )
     
@@ -382,6 +449,51 @@ def test_equidistant_vs_traditional():
     
     assert len(route1) > 0
     assert len(route2) > 0
+
+
+def test_optimize_zero_passes_skips_and_clears_stale_optimized_state():
+    r = weather_router(
+        Polar(str(_TEST_DIR / "volvo70.pol")),
+        getWindAt,
+        ds.time.values[:3],
+        12,
+        (-34, 0),
+        (-34, 17),
+        optimise_max_passes=0,
+    )
+    r.route()
+    initial_route = r.get_fastest_route(stats=False)
+    initial_isochrones = r.get_isochrones()
+
+    # Simulate stale optimized state from a previous run.
+    r.optimized_isochrones = [np.array([[0.0, 0.0, [(0.0, 0.0)], 0.0, 0.0]], dtype=object)]
+
+    r.optimize(previous_route=initial_route, previous_isochrones=initial_isochrones)
+
+    assert r.get_optimized_isochrones() == []
+    route_default = r.get_fastest_route(stats=True, use_optimized=False)
+    route_pref_optimized = r.get_fastest_route(stats=True, use_optimized=True)
+    assert np.isclose(route_default.iloc[-1]["lat"], route_pref_optimized.iloc[-1]["lat"])
+    assert np.isclose(route_default.iloc[-1]["lon"], route_pref_optimized.iloc[-1]["lon"])
+
+
+def test_route_skips_prune_equidistant_when_disabled():
+    r = weather_router(
+        Polar(str(_TEST_DIR / "volvo70.pol")),
+        getWindAt,
+        ds.time.values[:3],
+        12,
+        (-34, 0),
+        (-34, 17),
+        use_equidistant_pruning=False,
+    )
+
+    def _boom(_possible):
+        raise AssertionError("prune_equidistant should not be called when disabled")
+
+    r.prune_equidistant = _boom
+    r.route()
+    assert len(r.get_isochrones()) > 0
 
 def test_tack_penalty():
     """Test that the tack penalty feature works correctly"""

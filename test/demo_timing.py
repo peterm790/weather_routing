@@ -265,6 +265,7 @@ def main() -> int:
 
     Gibraltar = (36.073, -5.354)
     Palma = (39.283014, 2.527704)
+    optimise_max_passes = 0
 
     weatherrouter = isochronal_weather_router.weather_router(
         polar_obj,
@@ -285,6 +286,7 @@ def main() -> int:
         finish_size=5.0,
         tack_penalty=0.5,
         optimise_window=24,
+        optimise_max_passes=optimise_max_passes,
         leg_check_max_samples=10,
         point_validity_method="nearest",
         twa_change_penalty=0.02,
@@ -293,15 +295,15 @@ def main() -> int:
 
     algo_start = time.perf_counter()
     weatherrouter.route()
-    # Run optimization pass
-    initial_route_df = weatherrouter.get_fastest_route(stats=True)
-    initial_isochrones = weatherrouter.get_isochrones()
-    weatherrouter.optimize(
-        previous_route=initial_route_df,
-        previous_isochrones=initial_isochrones
-    )
+    if optimise_max_passes > 0:
+        initial_route_df = weatherrouter.get_fastest_route(stats=True)
+        initial_isochrones = weatherrouter.get_isochrones()
+        weatherrouter.optimize(
+            previous_route=initial_route_df,
+            previous_isochrones=initial_isochrones
+        )
     algo_elapsed = time.perf_counter() - algo_start
-    route_df = weatherrouter.get_fastest_route(stats=True, use_optimized=True)
+    route_df = weatherrouter.get_fastest_route(stats=True, use_optimized=(optimise_max_passes > 0))
     elapsed = time.perf_counter() - start
 
     route_points = route_df.shape[0]

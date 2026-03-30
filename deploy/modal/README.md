@@ -28,6 +28,8 @@ Endpoint: `GET /get_route`
 | `lead_time_start` | int | 0 | Start index for forecast lead time slice |
 | `freq` | str | "1hr" | Time step frequency ("1hr" or "3hr") |
 | `polar_file` | str | "volvo70" | Name of polar file (e.g. "volvo70") |
+| `optimise_max_passes` | int | 0 | Max optimization passes (`0` skips optimization stage) |
+| `use_equidistant_pruning` | bool or null | null | Enable/disable equidistant pruning. If null: defaults to `False` when `optimise_max_passes=0`, else `True`. |
 
 ### Example Request
 
@@ -43,8 +45,8 @@ The API returns a stream of Newline Delimited JSON (NDJSON) objects. The sequenc
 
 1. `progress`: Real-time updates on the initial routing algorithm's progress.
 2. `initial`: The initial route calculated before optimization.
-3. `progress`: Real-time updates on the optimization pass.
-4. `result`: The final optimized route.
+3. `progress`: Real-time updates on the optimization pass (only when `optimise_max_passes > 0`).
+4. `result`: Final route. If optimization is disabled, this mirrors the initial route.
 
 Each message has the following structure:
 

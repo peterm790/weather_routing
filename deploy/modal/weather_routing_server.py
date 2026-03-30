@@ -52,6 +52,8 @@ def get_route(
     finish_size: float = 5.0,
     optimise_n_points: int = 60,
     optimise_window: int = 24,
+    optimise_max_passes: int = 0,
+    use_equidistant_pruning: bool | None = None,
     leg_check_max_samples: int = 10,
     point_validity_method: str = "nearest",
     twa_change_penalty: float = 0.02,
@@ -81,6 +83,8 @@ def get_route(
     print(f"  finish_size={finish_size}")
     print(f"  optimise_n_points={optimise_n_points}")
     print(f"  optimise_window={optimise_window}")
+    print(f"  optimise_max_passes={optimise_max_passes}")
+    print(f"  use_equidistant_pruning={use_equidistant_pruning}")
     print(f"  leg_check_max_samples={leg_check_max_samples}")
     print(f"  point_validity_method='{point_validity_method}'")
     print(f"  twa_change_penalty={twa_change_penalty}")
@@ -106,6 +110,9 @@ def get_route(
 
     if leg_check_spacing_nm < 0.25:
         return Response(content="leg_check_spacing_nm must be >= 0.25 (nautical miles)", status_code=400)
+
+    if optimise_max_passes < 0:
+        return Response(content="optimise_max_passes must be >= 0", status_code=400)
 
     # Normalize/validate land-crossing mode.
     # Accepted: 'point', 'step', 'strict' (or bool for backward compatibility: False->point, True->step).
@@ -344,6 +351,8 @@ def get_route(
         finish_size=finish_size,
         tack_penalty=tack_penalty,
         optimise_window=optimise_window,
+        optimise_max_passes=optimise_max_passes,
+        use_equidistant_pruning=use_equidistant_pruning,
         leg_check_max_samples=leg_check_max_samples,
         point_validity_method=point_validity_method,
         twa_change_penalty=twa_change_penalty,
@@ -414,41 +423,42 @@ def get_route(
         }
         yield sse_data(initial_msg)
 
-        initial_isochrones = weatherrouter.get_isochrones()
-        
-        # Start optimization in a separate thread to stream progress
-        optimize_thread = threading.Thread(target=weatherrouter.optimize, args=(initial_route, initial_isochrones))
-        optimize_thread.start()
+        if optimise_max_passes > 0:
+            initial_isochrones = weatherrouter.get_isochrones()
+            
+            # Start optimization in a separate thread to stream progress
+            optimize_thread = threading.Thread(target=weatherrouter.optimize, args=(initial_route, initial_isochrones))
+            optimize_thread.start()
 
-        # Consume progress updates while optimization is running
-        last_keepalive = time.monotonic()
-        while optimize_thread.is_alive():
-            try:
-                # Wait for progress or timeout
-                progress = progress_queue.get(timeout=0.1)
-                # Mark optimization progress differently if needed, or reuse 'progress' type
-                # Here we reuse 'progress' type, but you could add a 'stage': 'optimization' field if desired
-                # For now, we assume client handles step/dist same way
-                last_keepalive = time.monotonic()
-                yield sse_data(progress)
-            except queue.Empty:
-                now = time.monotonic()
-                if now - last_keepalive >= KEEPALIVE_SECONDS:
-                    last_keepalive = now
-                    yield ": keep-alive\n\n"
-                continue
-        
-        optimize_thread.join()
+            # Consume progress updates while optimization is running
+            last_keepalive = time.monotonic()
+            while optimize_thread.is_alive():
+                try:
+                    # Wait for progress or timeout
+                    progress = progress_queue.get(timeout=0.1)
+                    # Mark optimization progress differently if needed, or reuse 'progress' type
+                    # Here we reuse 'progress' type, but you could add a 'stage': 'optimization' field if desired
+                    # For now, we assume client handles step/dist same way
+                    last_keepalive = time.monotonic()
+                    yield sse_data(progress)
+                except queue.Empty:
+                    now = time.monotonic()
+                    if now - last_keepalive >= KEEPALIVE_SECONDS:
+                        last_keepalive = now
+                        yield ": keep-alive\n\n"
+                    continue
+            
+            optimize_thread.join()
 
-        # Yield any remaining progress messages from optimization
-        while not progress_queue.empty():
-            try:
-                progress = progress_queue.get_nowait()
-                yield sse_data(progress)
-            except queue.Empty:
-                break
+            # Yield any remaining progress messages from optimization
+            while not progress_queue.empty():
+                try:
+                    progress = progress_queue.get_nowait()
+                    yield sse_data(progress)
+                except queue.Empty:
+                    break
 
-        route_df = weatherrouter.get_fastest_route(use_optimized=True)
+        route_df = weatherrouter.get_fastest_route(use_optimized=(optimise_max_passes > 0))
         
         # Process and yield final route
         if isinstance(route_df, list):
