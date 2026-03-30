@@ -253,8 +253,9 @@ class weather_router:
         if optimise_max_passes < 0:
             raise ValueError("optimise_max_passes must be >= 0")
         self.optimise_max_passes = optimise_max_passes
+        self.optimization_enabled = self.optimise_max_passes > 0
         if use_equidistant_pruning is None:
-            self.use_equidistant_pruning = self.optimise_max_passes > 0
+            self.use_equidistant_pruning = self.optimization_enabled
         elif isinstance(use_equidistant_pruning, bool):
             self.use_equidistant_pruning = use_equidistant_pruning
         else:
@@ -287,11 +288,12 @@ class weather_router:
         else:
             raise ValueError("avoid_land_crossings must be a bool or one of: 'point', 'step', 'strict'")
 
-        # Performance tweak:
-        # - During the *main routing* pass, cap land-crossing checks at 'step' (never 'strict').
-        # - During the *optimisation* pass, allow 'strict' when requested.
+        # Land-crossing routing policy:
+        # - If strict is requested and optimization is enabled, route with 'step' for speed and
+        #   keep 'strict' for optimization.
+        # - If strict is requested and optimization is disabled, keep strict in the main route.
         if self.avoid_land_crossings == 'strict':
-            self.avoid_land_crossings_route = 'step'
+            self.avoid_land_crossings_route = 'step' if self.optimization_enabled else 'strict'
             self.avoid_land_crossings_optimise = 'strict'
         else:
             self.avoid_land_crossings_route = self.avoid_land_crossings

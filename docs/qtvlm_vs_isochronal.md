@@ -17,7 +17,7 @@ This note compares the new QtVLM-style router (`src/weather_router/qtvlm_weather
 
 - **Land/sea crossing checks**
   - Both: support `avoid_land_crossings` in modes `point`, `step`, `strict`, all delegated to the land–sea mask utilities.
-  - Isochronal router: caps checks to `step` during the main routing and allows `strict` in the optimization pass (for accuracy near land).
+  - Isochronal router: with optimization enabled, strict is split as route=`step` + optimise=`strict`; with optimization disabled (`optimise_max_passes=0`), strict applies in the main routing pass.
   - QtVLM router: uses the chosen mode for the single routing pass (choose `strict` when you need maximum safety near coasts; it will be slower).
 
 - **Progress and streaming**
@@ -73,5 +73,4 @@ This note compares the new QtVLM-style router (`src/weather_router/qtvlm_weather
 - QtVLM server: `deploy/modal/weather_routing_server_qtvlm.py`
 - Isochronal router: `src/weather_router/isochronal_weather_router.py`
 - Isochronal server: `deploy/modal/weather_routing_server.py`
-
 

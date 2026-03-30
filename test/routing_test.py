@@ -609,10 +609,10 @@ def test_avoid_land_crossings_modes():
         )
 
 
-def test_strict_is_step_in_route_but_strict_in_optimise():
+def test_strict_is_step_in_route_when_optimization_enabled():
     """
-    If the user requests 'strict', we intentionally cap the main routing pass to 'step'
-    for speed, but keep strict checking available in the optimisation pass.
+    With optimization enabled, strict mode is split for speed:
+    route='step', optimise='strict'.
     """
     r = weather_router(
         Polar(str(_TEST_DIR / "volvo70.pol")),
@@ -621,6 +621,7 @@ def test_strict_is_step_in_route_but_strict_in_optimise():
         12,
         (-34, 0),
         (-34, 17),
+        optimise_max_passes=1,
         avoid_land_crossings="strict",
         land_threshold=0.42,
     )
@@ -628,3 +629,25 @@ def test_strict_is_step_in_route_but_strict_in_optimise():
     assert r.avoid_land_crossings_route == "step"
     assert r.avoid_land_crossings_optimise == "strict"
     assert np.isclose(r.land_threshold, 0.42)
+
+
+def test_strict_stays_strict_in_route_when_optimization_disabled():
+    """
+    With optimization disabled, strict mode applies on the first/main routing pass.
+    """
+    r = weather_router(
+        Polar(str(_TEST_DIR / "volvo70.pol")),
+        getWindAt,
+        ds.time.values[:3],
+        12,
+        (-34, 0),
+        (-34, 17),
+        optimise_max_passes=0,
+        avoid_land_crossings="strict",
+    )
+    assert r.avoid_land_crossings == "strict"
+    assert r.avoid_land_crossings_route == "strict"
+    assert r.avoid_land_crossings_optimise == "strict"
+    # Integration-style sanity check: routing still runs with this policy.
+    r.route()
+    assert len(r.get_isochrones()) > 0
