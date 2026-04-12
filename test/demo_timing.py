@@ -1,5 +1,5 @@
 """
-Run the README demo using dynamical GFS data, time it, and write a markdown report.
+Run the README demo using Icechunk GFS data, time it, and write a markdown report.
 
 Usage:
   uv run python test/demo_timing.py
@@ -20,6 +20,12 @@ from pathlib import Path
 
 import numpy as np
 import xarray as xr
+
+
+GFS_ICECHUNK_BUCKET = "dynamical-noaa-gfs"
+GFS_ICECHUNK_PREFIX = "noaa-gfs-forecast/v0.2.7.icechunk/"
+GFS_ICECHUNK_REGION = "us-west-2"
+GFS_ICECHUNK_BRANCH = "main"
 
 
 def _run_git(repo_root: Path, *args: str) -> str:
@@ -83,6 +89,65 @@ def _system_info() -> dict[str, str]:
     return info
 
 
+def _open_gfs_icechunk() -> xr.Dataset:
+    import icechunk
+
+    storage = icechunk.s3_storage(
+        bucket=GFS_ICECHUNK_BUCKET,
+        prefix=GFS_ICECHUNK_PREFIX,
+        region=GFS_ICECHUNK_REGION,
+        anonymous=True,
+    )
+    repo = icechunk.Repository.open(storage)
+    session = repo.readonly_session(GFS_ICECHUNK_BRANCH)
+    return xr.open_zarr(session.store, chunks=None, decode_timedelta=True)
+
+
+def _gfs_hour_to_timestep_index(hour: int) -> int:
+    if hour < 0:
+        raise ValueError(f"Invalid GFS lead hour: {hour}")
+    if hour > 384:
+        raise ValueError("GFS lead hour exceeds dataset range: max 384h")
+    if hour <= 120:
+        return hour
+    if hour < 123:
+        raise ValueError("GFS lead hour 121h/122h is unavailable")
+    if hour % 3 != 0:
+        raise ValueError("GFS extended lead hours must be 3-hour multiples")
+    return 120 + ((hour - 120) // 3)
+
+
+def _gfs_lead_indices(
+    freq: str,
+    lead_time_start: int,
+    lead_time_hours: int,
+    lead_time_size: int,
+) -> list[int]:
+    lead_time_end = lead_time_start + lead_time_hours
+
+    if freq == "1hr":
+        start_index = _gfs_hour_to_timestep_index(lead_time_start)
+        end_index = _gfs_hour_to_timestep_index(lead_time_end)
+        if end_index > 120:
+            raise ValueError("freq='1hr' only supports GFS lead hours 0..120")
+        return list(range(start_index, min(end_index + 1, lead_time_size)))
+
+    if freq == "3hr":
+        _gfs_hour_to_timestep_index(lead_time_start)
+        _gfs_hour_to_timestep_index(lead_time_end)
+        lead_hours = list(range(0, 121, 3)) + list(range(123, 385, 3))
+        selected_hours = [
+            hour for hour in lead_hours if lead_time_start <= hour <= lead_time_end
+        ]
+        return [
+            _gfs_hour_to_timestep_index(hour)
+            for hour in selected_hours
+            if _gfs_hour_to_timestep_index(hour) < lead_time_size
+        ]
+
+    raise ValueError("freq must be '1hr' or '3hr'")
+
+
 def _load_weather(
     cache_path: Path,
     init_time_index: int,
@@ -98,10 +163,8 @@ def _load_weather(
     if cache_path.exists():
         return xr.open_zarr(str(cache_path))
 
-    ds = xr.open_zarr(
-        "https://data.dynamical.org/noaa/gfs/forecast/latest.zarr",
-        decode_timedelta=True,
-    )
+    print("opening GFS Icechunk weather dataset")
+    ds = _open_gfs_icechunk()
     ds = ds.rename({"latitude": "lat", "longitude": "lon"})
     ds = ds[["wind_u_10m", "wind_v_10m"]]
 
@@ -110,17 +173,15 @@ def _load_weather(
         ds = ds.isel(init_time=init_time_index)
 
     if "lead_time" in ds.dims:
-        if freq == "1hr":
-            ds = ds.isel(lead_time=slice(lead_time_start, lead_time_start + lead_time_hours + 1))
-        elif freq == "3hr":
-            hourly_indices = list(range(0, lead_time_hours + 1, 3))
-            three_hourly_indices = list(range(121, ds.sizes["lead_time"]))
-            indices = hourly_indices + three_hourly_indices
-            ds = ds.isel(lead_time=indices)
-            start_index = int(round(lead_time_start / 3))
-            ds = ds.isel(lead_time=slice(start_index, None))
-        else:
-            raise ValueError("freq must be '1hr' or '3hr'")
+        lead_indices = _gfs_lead_indices(
+            freq=freq,
+            lead_time_start=lead_time_start,
+            lead_time_hours=lead_time_hours,
+            lead_time_size=ds.sizes["lead_time"],
+        )
+        if not lead_indices:
+            raise ValueError("No GFS lead_time values available for benchmark request")
+        ds = ds.isel(lead_time=lead_indices)
     elif "time" in ds.dims:
         ds = ds.isel(time=slice(lead_time_start, lead_time_start + lead_time_hours + 1))
 
@@ -216,7 +277,7 @@ def main() -> int:
     polar_file = "volvo70"
     init_time_index = 6964
     lead_time_hours = 48
-    cache_path = repo_root / "cache" / "version_benchmark_gfs_2024-07-10T20Z.zarr"
+    cache_path = repo_root / "cache" / "version_benchmark_gfs_icechunk.zarr"
 
     start = time.perf_counter()
     ds_processed = _load_weather(

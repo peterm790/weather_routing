@@ -4,6 +4,7 @@ geopy
 numba>=0.59
 xarray
 zarr
+icechunk; python_version >= "3.11"
 fsspec
 aiohttp
 requests

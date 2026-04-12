@@ -1,7 +1,9 @@
 import io
 import urllib.request
+from dataclasses import dataclass
 from functools import lru_cache
-from typing import Union
+from threading import Lock
+from typing import Optional, Union
 
 import modal
 
@@ -14,6 +16,7 @@ image = (
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
+        "icechunk",
         "numpy",
         "pandas",
         "numba",
@@ -26,6 +29,151 @@ image = (
 )
 
 app = modal.App("weather-routing", image=image)
+
+
+DEFAULT_DATASET_ID = "gfs-dynamical"
+
+
+@dataclass(frozen=True)
+class RoutingDatasetConfig:
+    dataset_id: str
+    bucket: str
+    prefix: str
+    region: str
+    branch: str
+    allowed_freqs: tuple[str, ...]
+
+
+DATASET_REGISTRY = {
+    "gfs-dynamical": RoutingDatasetConfig(
+        dataset_id="gfs-dynamical",
+        bucket="dynamical-noaa-gfs",
+        prefix="noaa-gfs-forecast/v0.2.7.icechunk/",
+        region="us-west-2",
+        branch="main",
+        allowed_freqs=("1hr", "3hr"),
+    ),
+    "ecmwf-aifs-single": RoutingDatasetConfig(
+        dataset_id="ecmwf-aifs-single",
+        bucket="dynamical-ecmwf-aifs-single",
+        prefix="ecmwf-aifs-single-forecast/v0.1.0.icechunk/",
+        region="us-west-2",
+        branch="main",
+        allowed_freqs=("6hr",),
+    ),
+}
+
+
+_DATASET_HANDLES = {}
+_DATASET_HANDLES_LOCK = Lock()
+
+
+def normalize_dataset_id(dataset_id: Optional[str]) -> str:
+    if isinstance(dataset_id, str) and dataset_id.strip():
+        return dataset_id.strip()
+    return DEFAULT_DATASET_ID
+
+
+def invalid_dataset_response(dataset_id: str):
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": "invalid_dataset",
+            "message": f"Unknown dataset_id: {dataset_id}",
+            "dataset_id": dataset_id,
+            "supported_dataset_ids": list(DATASET_REGISTRY.keys()),
+        },
+        headers={"X-Weather-Dataset-Id": dataset_id or DEFAULT_DATASET_ID},
+    )
+
+
+def open_weather_dataset(dataset_id: str):
+    import icechunk
+    import xarray as xr
+
+    config = DATASET_REGISTRY[dataset_id]
+
+    with _DATASET_HANDLES_LOCK:
+        cached = _DATASET_HANDLES.get(dataset_id)
+        if cached is not None:
+            return cached["ds"]
+
+        storage = icechunk.s3_storage(
+            bucket=config.bucket,
+            prefix=config.prefix,
+            region=config.region,
+            anonymous=True,
+        )
+        repo = icechunk.Repository.open(storage)
+        session = repo.readonly_session(config.branch)
+        ds = xr.open_zarr(session.store, chunks=None, decode_timedelta=True)
+
+        _DATASET_HANDLES[dataset_id] = {
+            "repo": repo,
+            "session": session,
+            "ds": ds,
+        }
+        return ds
+
+
+def gfs_hour_to_timestep_index(hour: int) -> int:
+    if hour < 0:
+        raise ValueError(f"Invalid GFS lead hour: {hour}")
+    if hour > 384:
+        raise ValueError("GFS lead hour exceeds dataset range: max 384h")
+    if hour <= 120:
+        return hour
+    if hour < 123:
+        raise ValueError("GFS lead hour 121h/122h is unavailable")
+    if hour % 3 != 0:
+        raise ValueError("GFS extended lead hours must be 3-hour multiples")
+    return 120 + ((hour - 120) // 3)
+
+
+def aifs_hour_to_timestep_index(hour: int) -> int:
+    if hour < 0:
+        raise ValueError(f"Invalid AIFS lead hour: {hour}")
+    if hour > 360:
+        raise ValueError("AIFS lead hour exceeds dataset range: max 360h")
+    if hour % 6 != 0:
+        raise ValueError("AIFS lead hours must be 6-hour multiples")
+    return hour // 6
+
+
+def routing_lead_indices(
+    dataset_id: str,
+    freq: str,
+    lead_time_start: int,
+    lead_time_size: int,
+) -> list[int]:
+    if dataset_id == "gfs-dynamical":
+        if freq == "1hr":
+            start_index = gfs_hour_to_timestep_index(lead_time_start)
+            if start_index > 120:
+                raise ValueError("freq='1hr' only supports GFS lead hours 0..120")
+            return list(range(start_index, min(121, lead_time_size)))
+
+        if freq == "3hr":
+            gfs_hour_to_timestep_index(lead_time_start)
+            lead_hours = list(range(0, 121, 3)) + list(range(123, 385, 3))
+            selected_hours = [hour for hour in lead_hours if hour >= lead_time_start]
+            return [
+                gfs_hour_to_timestep_index(hour)
+                for hour in selected_hours
+                if gfs_hour_to_timestep_index(hour) < lead_time_size
+            ]
+
+        raise ValueError("GFS freq must be '1hr' or '3hr'")
+
+    if dataset_id == "ecmwf-aifs-single":
+        if freq != "6hr":
+            raise ValueError("AIFS freq must be '6hr'")
+        start_index = aifs_hour_to_timestep_index(lead_time_start)
+        return list(range(start_index, min(61, lead_time_size)))
+
+    raise ValueError(f"Unknown dataset_id: {dataset_id}")
 
 
 @app.function(timeout=1200)
@@ -41,6 +189,7 @@ def get_route(
     max_lon: float,
     init_time: int = -1,
     lead_time_start: int = 0,
+    dataset_id: str = DEFAULT_DATASET_ID,
     freq: str = "1hr",
     crank_step: int = 30,
     avoid_land_crossings: Union[bool, str] = True,
@@ -72,6 +221,7 @@ def get_route(
     print(f"  max_lon={max_lon}")
     print(f"  init_time={init_time}")
     print(f"  lead_time_start={lead_time_start}")
+    print(f"  dataset_id='{dataset_id}'")
     print(f"  freq='{freq}'")
     print(f"  crank_step={crank_step}")
     print(f"  avoid_land_crossings={avoid_land_crossings}")
@@ -106,8 +256,21 @@ def get_route(
     from weather_router import isochronal_weather_router, polar
     from weather_router.wind_lookup import wind_indices_nearest_numba
 
-    if freq not in ["1hr", "3hr"]:
-        return Response(content="freq must be '1hr' or '3hr'", status_code=400)
+    dataset_id = normalize_dataset_id(dataset_id)
+    if dataset_id not in DATASET_REGISTRY:
+        return invalid_dataset_response(dataset_id)
+
+    dataset_config = DATASET_REGISTRY[dataset_id]
+
+    if freq not in dataset_config.allowed_freqs:
+        return Response(
+            content=(
+                f"freq must be one of {dataset_config.allowed_freqs} "
+                f"for dataset_id='{dataset_id}'"
+            ),
+            status_code=400,
+            headers={"X-Weather-Dataset-Id": dataset_id},
+        )
 
     if crank_step <= 0:
         return Response(
@@ -143,13 +306,8 @@ def get_route(
     start_point = (start_lat, start_lon)
     end_point = (end_lat, end_lon)
 
-    # Load weather data
-    # Note: Using the URL from the original script
-    print("Opening weather zarr")
-    ds = xr.open_zarr(
-        "https://data.dynamical.org/noaa/gfs/forecast/latest.zarr",
-        decode_timedelta=True,
-    )
+    print(f"Opening weather dataset {dataset_id}")
+    ds = open_weather_dataset(dataset_id)
 
     ds = ds.rename({"latitude": "lat", "longitude": "lon"})
     ds = ds[["wind_u_10m", "wind_v_10m"]]
@@ -160,21 +318,28 @@ def get_route(
     ds = ds.sel(lat=slice(max_lat, min_lat), lon=slice(min_lon, max_lon))
     ds = ds.isel(init_time=init_time)
 
-    if freq == "1hr":
-        # Keep hourly lead_time slice; do not override crank_step or spacing
-        ds = ds.isel(lead_time=slice(lead_time_start, 120))
-    elif freq == "3hr":
-        # Construct indices for 3-hourly sequence; do not override crank_step or spacing
-        # Hourly part: 0 to 120 (inclusive) every 3 hours
-        hourly_indices = list(range(0, 121, 3))
-        # 3-hourly part: 121 to end (data is already 3-hourly from 121+, so take all indices)
-        three_hourly_indices = list(range(121, ds.sizes["lead_time"]))
-        indices = hourly_indices + three_hourly_indices
+    try:
+        lead_indices = routing_lead_indices(
+            dataset_id=dataset_id,
+            freq=freq,
+            lead_time_start=int(lead_time_start),
+            lead_time_size=ds.sizes["lead_time"],
+        )
+    except ValueError as exc:
+        return Response(
+            content=str(exc),
+            status_code=400,
+            headers={"X-Weather-Dataset-Id": dataset_id},
+        )
 
-        start_index = int(round(lead_time_start / 3))
+    if not lead_indices:
+        return Response(
+            content="No lead_time values available for the requested dataset/frequency/start lead",
+            status_code=400,
+            headers={"X-Weather-Dataset-Id": dataset_id},
+        )
 
-        ds = ds.isel(lead_time=indices)
-        ds = ds.isel(lead_time=slice(start_index, None))
+    ds = ds.isel(lead_time=lead_indices)
 
     ds = ds.load()
 
@@ -511,5 +676,6 @@ def get_route(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
             "X-Content-Type-Options": "nosniff",
+            "X-Weather-Dataset-Id": dataset_id,
         },
     )
