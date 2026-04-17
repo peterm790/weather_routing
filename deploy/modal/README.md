@@ -26,8 +26,8 @@ Endpoint: `GET /get_route`
 | `max_lon` | float | - | Bounding box max longitude |
 | `init_time` | int | -1 | Forecast initialization index (-1 for latest) |
 | `lead_time_start` | int | 0 | Start index for forecast lead time slice |
-| `provider` | str | "dynamical" | Weather provider namespace. Currently only "dynamical" is supported. |
-| `dataset_id` | str | "gfs" | Weather dataset id. Use "gfs" for GFS or "aifs" for AIFS. |
+| `provider` | str | - | Weather provider namespace. Currently only "dynamical" is supported. |
+| `dataset_id` | str | - | Weather dataset id. Use "gfs" for GFS or "aifs" for AIFS. |
 | `freq` | str | "1hr" | Time step frequency. GFS supports "1hr" and "3hr"; AIFS supports "6hr". |
 | `polar_file` | str | "volvo70" | Name of polar file (e.g. "volvo70") |
 | `optimise_max_passes` | int | 0 | Max optimization passes (`0` skips optimization stage) |
@@ -35,7 +35,7 @@ Endpoint: `GET /get_route`
 
 ### Weather Sources
 
-New clients should send one of these canonical source shapes:
+Clients must send one of these canonical source shapes:
 
 ```json
 { "provider": "dynamical", "dataset_id": "gfs" }
@@ -47,7 +47,7 @@ New clients should send one of these canonical source shapes:
 
 For query strings, use `provider=dynamical&dataset_id=gfs` or `provider=dynamical&dataset_id=aifs`.
 
-Older clients may omit `provider` and `dataset_id`; the API defaults them to `dynamical` and `gfs`. Temporary legacy dataset aliases are accepted inbound for rollout compatibility, but responses, logs, stream metadata, and generated request examples use the canonical values above.
+Requests that omit `provider` or `dataset_id`, or use any old longer dataset id, are contract errors. The routing API does not translate legacy dataset ids.
 
 ### Example Request
 

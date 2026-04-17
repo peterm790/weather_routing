@@ -16,8 +16,7 @@ if _SRC_DIR.exists():
     sys.path.insert(0, str(_SRC_DIR))
 
 from weather_router.weather_sources import (
-    DEFAULT_DATASET_ID,
-    DEFAULT_PROVIDER,
+    DYNAMICAL_PROVIDER,
     WeatherSource,
     WeatherSourceValidationError,
     normalize_weather_source,
@@ -61,7 +60,7 @@ class RoutingDatasetConfig:
 
 DATASET_REGISTRY = {
     "gfs": RoutingDatasetConfig(
-        provider=DEFAULT_PROVIDER,
+        provider=DYNAMICAL_PROVIDER,
         dataset_id="gfs",
         dataset_name="GFS",
         bucket="dynamical-noaa-gfs",
@@ -71,7 +70,7 @@ DATASET_REGISTRY = {
         allowed_freqs=("1hr", "3hr"),
     ),
     "aifs": RoutingDatasetConfig(
-        provider=DEFAULT_PROVIDER,
+        provider=DYNAMICAL_PROVIDER,
         dataset_id="aifs",
         dataset_name="AIFS",
         bucket="dynamical-ecmwf-aifs-single",
@@ -107,14 +106,9 @@ def weather_source_metadata(
 def invalid_weather_source_response(exc: WeatherSourceValidationError):
     from fastapi.responses import JSONResponse
 
-    fallback_source = WeatherSource(
-        provider=DEFAULT_PROVIDER,
-        dataset_id=DEFAULT_DATASET_ID,
-    )
     return JSONResponse(
         status_code=400,
         content=exc.to_dict(),
-        headers=weather_source_headers(fallback_source),
     )
 
 
@@ -216,10 +210,10 @@ def get_route(
     min_lon: float,
     max_lat: float,
     max_lon: float,
+    provider: str,
+    dataset_id: str,
     init_time: int = -1,
     lead_time_start: int = 0,
-    provider: str = DEFAULT_PROVIDER,
-    dataset_id: str = DEFAULT_DATASET_ID,
     freq: str = "1hr",
     crank_step: int = 30,
     avoid_land_crossings: Union[bool, str] = True,

@@ -1,18 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 
-DEFAULT_PROVIDER = "dynamical"
-DEFAULT_DATASET_ID = "gfs"
+DYNAMICAL_PROVIDER = "dynamical"
 
-SUPPORTED_PROVIDERS = (DEFAULT_PROVIDER,)
+SUPPORTED_PROVIDERS = (DYNAMICAL_PROVIDER,)
 SUPPORTED_DATASET_IDS = ("gfs", "aifs")
-LEGACY_DATASET_ALIASES = {
-    "gfs-dynamical": "gfs",
-    "ecmwf-aifs-single": "aifs",
-}
 
 
 @dataclass(frozen=True)
@@ -42,7 +36,7 @@ class WeatherSourceValidationError(ValueError):
         *,
         error: str,
         field: str,
-        value: Optional[str],
+        value: str | None,
         message: str,
         supported_values: tuple[str, ...],
     ) -> None:
@@ -62,18 +56,37 @@ class WeatherSourceValidationError(ValueError):
         }
 
 
-def _clean(value: Optional[str], default: str) -> str:
+def _clean(value: object, field: str) -> str:
     if value is None:
-        return default
+        raise WeatherSourceValidationError(
+            error=f"missing_{field}",
+            field=field,
+            value=None,
+            message=f"{field} is required",
+            supported_values=(
+                SUPPORTED_PROVIDERS if field == "provider" else SUPPORTED_DATASET_IDS
+            ),
+        )
+
     text = str(value).strip().lower()
-    return text or default
+    if not text:
+        raise WeatherSourceValidationError(
+            error=f"missing_{field}",
+            field=field,
+            value=text,
+            message=f"{field} is required",
+            supported_values=(
+                SUPPORTED_PROVIDERS if field == "provider" else SUPPORTED_DATASET_IDS
+            ),
+        )
+    return text
 
 
 def normalize_weather_source(
-    provider: Optional[str] = None,
-    dataset_id: Optional[str] = None,
+    provider: str,
+    dataset_id: str,
 ) -> WeatherSource:
-    normalized_provider = _clean(provider, DEFAULT_PROVIDER)
+    normalized_provider = _clean(provider, "provider")
     if normalized_provider not in SUPPORTED_PROVIDERS:
         raise WeatherSourceValidationError(
             error="invalid_provider",
@@ -83,10 +96,7 @@ def normalize_weather_source(
             supported_values=SUPPORTED_PROVIDERS,
         )
 
-    normalized_dataset_id = _clean(dataset_id, DEFAULT_DATASET_ID)
-    normalized_dataset_id = LEGACY_DATASET_ALIASES.get(
-        normalized_dataset_id, normalized_dataset_id
-    )
+    normalized_dataset_id = _clean(dataset_id, "dataset_id")
     if normalized_dataset_id not in SUPPORTED_DATASET_IDS:
         raise WeatherSourceValidationError(
             error="invalid_dataset_id",
