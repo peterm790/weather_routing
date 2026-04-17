@@ -1,12 +1,20 @@
 import io
 import hashlib
+import sys
 import urllib.request
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from threading import Lock
 from typing import Union
 
 import modal
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SRC_DIR = _REPO_ROOT / "src"
+if _SRC_DIR.exists():
+    sys.path.insert(0, str(_SRC_DIR))
+
 from weather_router.weather_sources import (
     DEFAULT_DATASET_ID,
     DEFAULT_PROVIDER,
