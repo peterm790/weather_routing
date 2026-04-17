@@ -26,22 +26,46 @@ Endpoint: `GET /get_route`
 | `max_lon` | float | - | Bounding box max longitude |
 | `init_time` | int | -1 | Forecast initialization index (-1 for latest) |
 | `lead_time_start` | int | 0 | Start index for forecast lead time slice |
-| `freq` | str | "1hr" | Time step frequency ("1hr" or "3hr") |
+| `provider` | str | "dynamical" | Weather provider namespace. Currently only "dynamical" is supported. |
+| `dataset_id` | str | "gfs" | Weather dataset id. Use "gfs" for GFS or "aifs" for AIFS. |
+| `freq` | str | "1hr" | Time step frequency. GFS supports "1hr" and "3hr"; AIFS supports "6hr". |
 | `polar_file` | str | "volvo70" | Name of polar file (e.g. "volvo70") |
 | `optimise_max_passes` | int | 0 | Max optimization passes (`0` skips optimization stage) |
 | `use_equidistant_pruning` | bool or null | null | Enable/disable equidistant pruning. If null: defaults to `False` when `optimise_max_passes=0`, else `True`. |
+
+### Weather Sources
+
+New clients should send one of these canonical source shapes:
+
+```json
+{ "provider": "dynamical", "dataset_id": "gfs" }
+```
+
+```json
+{ "provider": "dynamical", "dataset_id": "aifs" }
+```
+
+For query strings, use `provider=dynamical&dataset_id=gfs` or `provider=dynamical&dataset_id=aifs`.
+
+Older clients may omit `provider` and `dataset_id`; the API defaults them to `dynamical` and `gfs`. Temporary legacy dataset aliases are accepted inbound for rollout compatibility, but responses, logs, stream metadata, and generated request examples use the canonical values above.
 
 ### Example Request
 
 You can test directly in your browser or via curl:
 
 ```bash
-curl -X GET "https://peterm790--weather-routing-get-route.modal.run?start_lat=43.0&start_lon=5.0&end_lat=40.0&end_lon=8.0&min_lat=39.0&min_lon=4.0&max_lat=44.0&max_lon=9.0&init_time=-1&lead_time_start=0&freq=1hr&polar_file=volvo70"
+curl -X GET "https://peterm790--weather-routing-get-route.modal.run?provider=dynamical&dataset_id=gfs&start_lat=43.0&start_lon=5.0&end_lat=40.0&end_lon=8.0&min_lat=39.0&min_lon=4.0&max_lat=44.0&max_lon=9.0&init_time=-1&lead_time_start=0&freq=1hr&polar_file=volvo70"
+```
+
+AIFS example:
+
+```bash
+curl -X GET "https://peterm790--weather-routing-get-route.modal.run?provider=dynamical&dataset_id=aifs&start_lat=43.0&start_lon=5.0&end_lat=40.0&end_lon=8.0&min_lat=39.0&min_lon=4.0&max_lat=44.0&max_lon=9.0&init_time=-1&lead_time_start=0&freq=6hr&polar_file=volvo70"
 ```
 
 ### Response Format
 
-The API returns a stream of Newline Delimited JSON (NDJSON) objects. The sequence of messages is:
+The API returns Server-Sent Events. Each `data:` frame contains a single JSON object. The sequence of messages is:
 
 1. `progress`: Real-time updates on the initial routing algorithm's progress.
 2. `initial`: The initial route calculated before optimization.
@@ -53,8 +77,9 @@ Each message has the following structure:
 **Progress Message:**
 ```json
 {
-  "type": "progress", 
-  "step": 5, 
+  "type": "progress",
+  "metadata": {"provider": "dynamical", "dataset_id": "gfs", "dataset_name": "GFS", "request_fingerprint": "..."},
+  "step": 5,
   "dist": 120.5,
   "isochrones": [[-34.0, 18.0], [-34.1, 18.1], ...]
 }
@@ -62,12 +87,24 @@ Each message has the following structure:
 
 **Initial Route Message:**
 ```json
-{"type": "initial", "data": [...route points...]}
+{"type": "initial", "metadata": {"provider": "dynamical", "dataset_id": "gfs", "dataset_name": "GFS", "request_fingerprint": "..."}, "data": [...route points...]}
 ```
 
 **Result Message:**
 ```json
-{"type": "result", "data": [...route points...]}
+{"type": "result", "metadata": {"provider": "dynamical", "dataset_id": "gfs", "dataset_name": "GFS", "request_fingerprint": "..."}, "data": [...route points...]}
+```
+
+Validation errors for unsupported providers or dataset ids return HTTP `400` with a structured JSON body such as:
+
+```json
+{
+  "error": "invalid_dataset_id",
+  "message": "Unknown dataset_id: not-real",
+  "field": "dataset_id",
+  "dataset_id": "not-real",
+  "supported_dataset_ids": ["gfs", "aifs"]
+}
 ```
 
 Example usage with Python:

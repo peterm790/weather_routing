@@ -1,18 +1,26 @@
 import io
+import hashlib
 import urllib.request
 from dataclasses import dataclass
 from functools import lru_cache
 from threading import Lock
-from typing import Optional, Union
+from typing import Union
 
 import modal
+from weather_router.weather_sources import (
+    DEFAULT_DATASET_ID,
+    DEFAULT_PROVIDER,
+    WeatherSource,
+    WeatherSourceValidationError,
+    normalize_weather_source,
+)
 
 # Define the image with dependencies
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20260330"})
+    .env({"FORCE_BUILD": "20260417"})
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
@@ -31,12 +39,11 @@ image = (
 app = modal.App("weather-routing", image=image)
 
 
-DEFAULT_DATASET_ID = "gfs-dynamical"
-
-
 @dataclass(frozen=True)
 class RoutingDatasetConfig:
+    provider: str
     dataset_id: str
+    dataset_name: str
     bucket: str
     prefix: str
     region: str
@@ -45,16 +52,20 @@ class RoutingDatasetConfig:
 
 
 DATASET_REGISTRY = {
-    "gfs-dynamical": RoutingDatasetConfig(
-        dataset_id="gfs-dynamical",
+    "gfs": RoutingDatasetConfig(
+        provider=DEFAULT_PROVIDER,
+        dataset_id="gfs",
+        dataset_name="GFS",
         bucket="dynamical-noaa-gfs",
         prefix="noaa-gfs-forecast/v0.2.7.icechunk/",
         region="us-west-2",
         branch="main",
         allowed_freqs=("1hr", "3hr"),
     ),
-    "ecmwf-aifs-single": RoutingDatasetConfig(
-        dataset_id="ecmwf-aifs-single",
+    "aifs": RoutingDatasetConfig(
+        provider=DEFAULT_PROVIDER,
+        dataset_id="aifs",
+        dataset_name="AIFS",
         bucket="dynamical-ecmwf-aifs-single",
         prefix="ecmwf-aifs-single-forecast/v0.1.0.icechunk/",
         region="us-west-2",
@@ -68,35 +79,45 @@ _DATASET_HANDLES = {}
 _DATASET_HANDLES_LOCK = Lock()
 
 
-def normalize_dataset_id(dataset_id: Optional[str]) -> str:
-    if isinstance(dataset_id, str) and dataset_id.strip():
-        return dataset_id.strip()
-    return DEFAULT_DATASET_ID
+def weather_source_headers(source: WeatherSource) -> dict[str, str]:
+    return {
+        "X-Weather-Provider": source.provider,
+        "X-Weather-Dataset-Id": source.dataset_id,
+    }
 
 
-def invalid_dataset_response(dataset_id: str):
+def weather_source_metadata(
+    source: WeatherSource,
+    request_fingerprint: str | None = None,
+) -> dict[str, str]:
+    metadata = source.metadata()
+    if request_fingerprint is not None:
+        metadata["request_fingerprint"] = request_fingerprint
+    return metadata
+
+
+def invalid_weather_source_response(exc: WeatherSourceValidationError):
     from fastapi.responses import JSONResponse
 
+    fallback_source = WeatherSource(
+        provider=DEFAULT_PROVIDER,
+        dataset_id=DEFAULT_DATASET_ID,
+    )
     return JSONResponse(
         status_code=400,
-        content={
-            "error": "invalid_dataset",
-            "message": f"Unknown dataset_id: {dataset_id}",
-            "dataset_id": dataset_id,
-            "supported_dataset_ids": list(DATASET_REGISTRY.keys()),
-        },
-        headers={"X-Weather-Dataset-Id": dataset_id or DEFAULT_DATASET_ID},
+        content=exc.to_dict(),
+        headers=weather_source_headers(fallback_source),
     )
 
 
-def open_weather_dataset(dataset_id: str):
+def open_weather_dataset(source: WeatherSource):
     import icechunk
     import xarray as xr
 
-    config = DATASET_REGISTRY[dataset_id]
+    config = DATASET_REGISTRY[source.dataset_id]
 
     with _DATASET_HANDLES_LOCK:
-        cached = _DATASET_HANDLES.get(dataset_id)
+        cached = _DATASET_HANDLES.get(source.cache_key)
         if cached is not None:
             return cached["ds"]
 
@@ -110,7 +131,7 @@ def open_weather_dataset(dataset_id: str):
         session = repo.readonly_session(config.branch)
         ds = xr.open_zarr(session.store, chunks=None, decode_timedelta=True)
 
-        _DATASET_HANDLES[dataset_id] = {
+        _DATASET_HANDLES[source.cache_key] = {
             "repo": repo,
             "session": session,
             "ds": ds,
@@ -148,7 +169,7 @@ def routing_lead_indices(
     lead_time_start: int,
     lead_time_size: int,
 ) -> list[int]:
-    if dataset_id == "gfs-dynamical":
+    if dataset_id == "gfs":
         if freq == "1hr":
             start_index = gfs_hour_to_timestep_index(lead_time_start)
             if start_index > 120:
@@ -167,7 +188,7 @@ def routing_lead_indices(
 
         raise ValueError("GFS freq must be '1hr' or '3hr'")
 
-    if dataset_id == "ecmwf-aifs-single":
+    if dataset_id == "aifs":
         if freq != "6hr":
             raise ValueError("AIFS freq must be '6hr'")
         start_index = aifs_hour_to_timestep_index(lead_time_start)
@@ -189,6 +210,7 @@ def get_route(
     max_lon: float,
     init_time: int = -1,
     lead_time_start: int = 0,
+    provider: str = DEFAULT_PROVIDER,
     dataset_id: str = DEFAULT_DATASET_ID,
     freq: str = "1hr",
     crank_step: int = 30,
@@ -210,7 +232,73 @@ def get_route(
     twa_change_penalty: float = 0.02,
     twa_change_threshold: float = 5.0,
 ):
+    import json
+    import queue
+    import threading
+    import time
+
+    import numpy as np
+    import xarray as xr
+    from fastapi import Response
+    from fastapi.responses import StreamingResponse
+
+    try:
+        source = normalize_weather_source(provider=provider, dataset_id=dataset_id)
+    except WeatherSourceValidationError as exc:
+        return invalid_weather_source_response(exc)
+
+    dataset_id = source.dataset_id
+    dataset_config = DATASET_REGISTRY[dataset_id]
+
+    request_params = {
+        "provider": source.provider,
+        "dataset_id": source.dataset_id,
+        "start_lat": start_lat,
+        "start_lon": start_lon,
+        "end_lat": end_lat,
+        "end_lon": end_lon,
+        "min_lat": min_lat,
+        "min_lon": min_lon,
+        "max_lat": max_lat,
+        "max_lon": max_lon,
+        "init_time": init_time,
+        "lead_time_start": lead_time_start,
+        "freq": freq,
+        "crank_step": crank_step,
+        "avoid_land_crossings": avoid_land_crossings,
+        "leg_check_spacing_nm": leg_check_spacing_nm,
+        "polar_file": polar_file,
+        "spread": spread,
+        "wake_lim": wake_lim,
+        "rounding": rounding,
+        "n_points": n_points,
+        "tack_penalty": tack_penalty,
+        "finish_size": finish_size,
+        "optimise_n_points": optimise_n_points,
+        "optimise_window": optimise_window,
+        "optimise_max_passes": optimise_max_passes,
+        "use_equidistant_pruning": use_equidistant_pruning,
+        "leg_check_max_samples": leg_check_max_samples,
+        "point_validity_method": point_validity_method,
+        "twa_change_penalty": twa_change_penalty,
+        "twa_change_threshold": twa_change_threshold,
+    }
+    request_fingerprint = hashlib.sha256(
+        json.dumps(request_params, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()[:16]
+    stream_metadata = weather_source_metadata(source, request_fingerprint)
+    response_headers = {
+        **weather_source_headers(source),
+        "X-Routing-Request-Fingerprint": request_fingerprint,
+    }
+
     print("query params:")
+    print(f"  provider='{source.provider}'")
+    print(f"  dataset_id='{source.dataset_id}'")
+    print(f"  dataset_name='{dataset_config.dataset_name}'")
+    print(f"  request_fingerprint='{request_fingerprint}'")
     print(f"  start_lat={start_lat}")
     print(f"  start_lon={start_lon}")
     print(f"  end_lat={end_lat}")
@@ -221,7 +309,6 @@ def get_route(
     print(f"  max_lon={max_lon}")
     print(f"  init_time={init_time}")
     print(f"  lead_time_start={lead_time_start}")
-    print(f"  dataset_id='{dataset_id}'")
     print(f"  freq='{freq}'")
     print(f"  crank_step={crank_step}")
     print(f"  avoid_land_crossings={avoid_land_crossings}")
@@ -242,25 +329,9 @@ def get_route(
     print(f"  twa_change_penalty={twa_change_penalty}")
     print(f"  twa_change_threshold={twa_change_threshold}")
 
-    import json
-    import queue
-    import threading
-    import time
-
-    import numpy as np
-    import xarray as xr
-    from fastapi import Response
-    from fastapi.responses import StreamingResponse
-
     # Import here to ensure they are available in the container
     from weather_router import isochronal_weather_router, polar
     from weather_router.wind_lookup import wind_indices_nearest_numba
-
-    dataset_id = normalize_dataset_id(dataset_id)
-    if dataset_id not in DATASET_REGISTRY:
-        return invalid_dataset_response(dataset_id)
-
-    dataset_config = DATASET_REGISTRY[dataset_id]
 
     if freq not in dataset_config.allowed_freqs:
         return Response(
@@ -269,22 +340,29 @@ def get_route(
                 f"for dataset_id='{dataset_id}'"
             ),
             status_code=400,
-            headers={"X-Weather-Dataset-Id": dataset_id},
+            headers=response_headers,
         )
 
     if crank_step <= 0:
         return Response(
-            content="crank_step must be a positive integer (minutes)", status_code=400
+            content="crank_step must be a positive integer (minutes)",
+            status_code=400,
+            headers=response_headers,
         )
 
     if leg_check_spacing_nm < 0.25:
         return Response(
             content="leg_check_spacing_nm must be >= 0.25 (nautical miles)",
             status_code=400,
+            headers=response_headers,
         )
 
     if optimise_max_passes < 0:
-        return Response(content="optimise_max_passes must be >= 0", status_code=400)
+        return Response(
+            content="optimise_max_passes must be >= 0",
+            status_code=400,
+            headers=response_headers,
+        )
 
     # Normalize/validate land-crossing mode.
     # Accepted: 'point', 'step', 'strict' (or bool for backward compatibility: False->point, True->step).
@@ -296,18 +374,23 @@ def get_route(
             return Response(
                 content="avoid_land_crossings must be one of: 'point', 'step', 'strict' (or bool)",
                 status_code=400,
+                headers=response_headers,
             )
     else:
         return Response(
             content="avoid_land_crossings must be one of: 'point', 'step', 'strict' (or bool)",
             status_code=400,
+            headers=response_headers,
         )
 
     start_point = (start_lat, start_lon)
     end_point = (end_lat, end_lon)
 
-    print(f"Opening weather dataset {dataset_id}")
-    ds = open_weather_dataset(dataset_id)
+    print(
+        "Opening weather dataset "
+        f"provider='{source.provider}' dataset_id='{source.dataset_id}'"
+    )
+    ds = open_weather_dataset(source)
 
     ds = ds.rename({"latitude": "lat", "longitude": "lon"})
     ds = ds[["wind_u_10m", "wind_v_10m"]]
@@ -329,14 +412,14 @@ def get_route(
         return Response(
             content=str(exc),
             status_code=400,
-            headers={"X-Weather-Dataset-Id": dataset_id},
+            headers=response_headers,
         )
 
     if not lead_indices:
         return Response(
             content="No lead_time values available for the requested dataset/frequency/start lead",
             status_code=400,
-            headers={"X-Weather-Dataset-Id": dataset_id},
+            headers=response_headers,
         )
 
     ds = ds.isel(lead_time=lead_indices)
@@ -486,6 +569,7 @@ def get_route(
         progress_queue.put(
             {
                 "type": "progress",
+                "metadata": stream_metadata,
                 "step": step,
                 "dist": float(dist_wp),
                 "isochrones": simple_isochrones,
@@ -511,6 +595,7 @@ def get_route(
                 progress_queue.put(
                     {
                         "type": "result",
+                        "metadata": stream_metadata,
                         "preliminary": True,
                         "pass_idx": pass_idx,
                         "step": step,
@@ -522,6 +607,7 @@ def get_route(
                 progress_queue.put(
                     {
                         "type": "error",
+                        "metadata": stream_metadata,
                         "scope": "preliminary_result_emit",
                         "message": f"{type(e).__name__}: {str(e)}",
                     }
@@ -613,7 +699,11 @@ def get_route(
                 initial_route_copy["time"] = initial_route_copy["time"].astype(str)
             initial_route_data = initial_route_copy.to_dict(orient="records")
 
-        initial_msg = {"type": "initial", "data": initial_route_data}
+        initial_msg = {
+            "type": "initial",
+            "metadata": stream_metadata,
+            "data": initial_route_data,
+        }
         yield sse_data(initial_msg)
 
         if optimise_max_passes > 0:
@@ -665,7 +755,12 @@ def get_route(
                 route_df["time"] = route_df["time"].astype(str)
             route_data = route_df.to_dict(orient="records")
 
-        result_msg = {"type": "result", "preliminary": False, "data": route_data}
+        result_msg = {
+            "type": "result",
+            "metadata": stream_metadata,
+            "preliminary": False,
+            "data": route_data,
+        }
         yield sse_data(result_msg)
 
     return StreamingResponse(
@@ -676,6 +771,6 @@ def get_route(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
             "X-Content-Type-Options": "nosniff",
-            "X-Weather-Dataset-Id": dataset_id,
+            **response_headers,
         },
     )

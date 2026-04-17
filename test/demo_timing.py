@@ -269,7 +269,9 @@ def main() -> int:
     sys_info = _system_info()
 
     from weather_router import isochronal_weather_router, polar
+    from weather_router.weather_sources import normalize_weather_source
 
+    source = normalize_weather_source(provider="dynamical", dataset_id="gfs")
     freq = "1hr"
     crank_step = 60
     lead_time_start = 0
@@ -277,9 +279,17 @@ def main() -> int:
     polar_file = "volvo70"
     init_time_index = 6964
     lead_time_hours = 48
-    cache_path = repo_root / "cache" / "version_benchmark_gfs_icechunk.zarr"
+    cache_path = (
+        repo_root
+        / "cache"
+        / f"version_benchmark_{source.provider}_{source.dataset_id}_icechunk.zarr"
+    )
 
     start = time.perf_counter()
+    print(
+        "weather source: "
+        f"provider={source.provider} dataset_id={source.dataset_id}"
+    )
     ds_processed = _load_weather(
         cache_path=cache_path,
         init_time_index=init_time_index,
@@ -393,12 +403,16 @@ def main() -> int:
     headers = [
         "timestamp_utc",
         "git_sha",
+        "provider",
+        "dataset_id",
         "cpu_model",
         "algo_runtime_seconds",
     ]
     values = [
         timestamp_utc,
         head_sha,
+        source.provider,
+        source.dataset_id,
         sys_info["cpu_model"],
         f"{algo_elapsed:.2f}",
     ]
@@ -409,6 +423,8 @@ def main() -> int:
         "timestamp_utc",
         "git_sha",
         "git_branch",
+        "provider",
+        "dataset_id",
         "cpu_model",
         "cpu_cores",
         "mem_gb",
@@ -428,6 +444,8 @@ def main() -> int:
         timestamp_utc,
         head_sha,
         branch,
+        source.provider,
+        source.dataset_id,
         sys_info["cpu_model"],
         sys_info["cpu_cores"],
         sys_info["mem_gb"],

@@ -52,9 +52,9 @@ uv run python test/demo_timing.py
 ```
 
 This demo:
-- Uses the dynamical GFS forecast dataset (`data.dynamical.org`)
+- Uses the canonical weather source `provider=dynamical&dataset_id=gfs` (GFS)
 - Loads the same GEBCO land/sea mask used by the Modal server
-- Caches the weather subset locally at `cache/version_benchmark_gfs_2024-07-10T20Z.zarr`
+- Caches the weather subset locally under a provider/dataset-specific path in `cache/`
 - Runs a full routing and writes `version_benchmark.md` and `version_benchmark.csv` with timing stats
 - Writes a static route image to `version_benchmark.png`
 
@@ -70,7 +70,19 @@ You can skip the hook for a single push:
 SKIP_DEMO_TIMING=1 git push
 ```
 
-To perform a routing using the same dynamical forecast data source as the Modal deployment (GFS on data.dynamical.org):
+The routing API uses short, canonical weather source fields:
+
+```json
+{ "provider": "dynamical", "dataset_id": "gfs" }
+```
+
+```json
+{ "provider": "dynamical", "dataset_id": "aifs" }
+```
+
+Use the user-facing dataset names `GFS` and `AIFS`.
+
+To perform a routing using the same dynamical GFS forecast data source as the Modal deployment:
 
 - First import packages:
 
