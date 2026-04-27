@@ -1,37 +1,23 @@
-import io
 import hashlib
-import sys
+import io
 import urllib.request
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
 from threading import Lock
-from typing import Union
+from typing import Any, Union
 
 import modal
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_SRC_DIR = _REPO_ROOT / "src"
-if _SRC_DIR.exists():
-    sys.path.insert(0, str(_SRC_DIR))
-
-from weather_router.weather_sources import (
-    DYNAMICAL_PROVIDER,
-    WeatherSource,
-    WeatherSourceValidationError,
-    normalize_weather_source,
-)
-
 # Define the image with dependencies
 image = (
-    modal.Image.debian_slim(python_version="3.11")
+    modal.Image.debian_slim(python_version="3.13")
     .apt_install("git")
     # Add a timestamp or version to force cache invalidation when git repo changes
-    .env({"FORCE_BUILD": "20260417"})
+    .env({"FORCE_BUILD": "20260427"})
     .uv_pip_install(
         "xarray[complete]>=2025.1.2",
         "zarr>=3.0.8",
-        "icechunk",
+        "icechunk==2.0.3",
         "numpy",
         "pandas",
         "numba",
@@ -60,7 +46,7 @@ class RoutingDatasetConfig:
 
 DATASET_REGISTRY = {
     "gfs": RoutingDatasetConfig(
-        provider=DYNAMICAL_PROVIDER,
+        provider="dynamical",
         dataset_id="gfs",
         dataset_name="GFS",
         bucket="dynamical-noaa-gfs",
@@ -70,7 +56,7 @@ DATASET_REGISTRY = {
         allowed_freqs=("1hr", "3hr"),
     ),
     "aifs": RoutingDatasetConfig(
-        provider=DYNAMICAL_PROVIDER,
+        provider="dynamical",
         dataset_id="aifs",
         dataset_name="AIFS",
         bucket="dynamical-ecmwf-aifs-single",
@@ -86,7 +72,17 @@ _DATASET_HANDLES = {}
 _DATASET_HANDLES_LOCK = Lock()
 
 
-def weather_source_headers(source: WeatherSource) -> dict[str, str]:
+@lru_cache(maxsize=1)
+def _weather_sources():
+    from weather_router.weather_sources import (
+        WeatherSourceValidationError,
+        normalize_weather_source,
+    )
+
+    return normalize_weather_source, WeatherSourceValidationError
+
+
+def weather_source_headers(source: Any) -> dict[str, str]:
     return {
         "X-Weather-Provider": source.provider,
         "X-Weather-Dataset-Id": source.dataset_id,
@@ -94,7 +90,7 @@ def weather_source_headers(source: WeatherSource) -> dict[str, str]:
 
 
 def weather_source_metadata(
-    source: WeatherSource,
+    source: Any,
     request_fingerprint: str | None = None,
 ) -> dict[str, str]:
     metadata = source.metadata()
@@ -103,7 +99,7 @@ def weather_source_metadata(
     return metadata
 
 
-def invalid_weather_source_response(exc: WeatherSourceValidationError):
+def invalid_weather_source_response(exc: Any):
     from fastapi.responses import JSONResponse
 
     return JSONResponse(
@@ -112,7 +108,7 @@ def invalid_weather_source_response(exc: WeatherSourceValidationError):
     )
 
 
-def open_weather_dataset(source: WeatherSource):
+def open_weather_dataset(source: Any):
     import icechunk
     import xarray as xr
 
@@ -131,7 +127,12 @@ def open_weather_dataset(source: WeatherSource):
         )
         repo = icechunk.Repository.open(storage)
         session = repo.readonly_session(config.branch)
-        ds = xr.open_zarr(session.store, chunks=None, decode_timedelta=True)
+        ds = xr.open_zarr(
+            session.store,
+            chunks=None,
+            decode_timedelta=True,
+            consolidated=False,
+        )
 
         _DATASET_HANDLES[source.cache_key] = {
             "repo": repo,
@@ -243,6 +244,8 @@ def get_route(
     import xarray as xr
     from fastapi import Response
     from fastapi.responses import StreamingResponse
+
+    normalize_weather_source, WeatherSourceValidationError = _weather_sources()
 
     try:
         source = normalize_weather_source(provider=provider, dataset_id=dataset_id)
